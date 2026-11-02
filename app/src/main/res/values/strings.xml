@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">NovaPDF</string>
+    <string name="open_pdf">Open PDF</string>
+    <string name="read_out_loud">Read Out Loud</string>
+    <string name="stop_reading">Stop Reading</string>
+    <string name="speech_rate">Speech Rate</string>
+    <string name="pitch">Voice Pitch</string>
+    <string name="voices">Available Voices</string>
+    <string name="dual_page_mode">Dual Page Spread</string>
+    <string name="stylus_mode">Stylus &amp; S-Pen</string>
+    <string name="undo">Undo</string>
+    <string name="redo">Redo</string>
+    <string name="clear_annotations">Clear All</string>
+    <string name="save_document">Save PDF</string>
+    <string name="tts_channel_name">PDF Audio Playback</string>
+    <string name="tts_channel_desc">Controls for Read Out Loud PDF speech</string>
+</resources>
