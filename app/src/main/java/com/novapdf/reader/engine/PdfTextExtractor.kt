@@ -2,23 +2,37 @@ package com.novapdf.reader.engine
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
+import android.util.LruCache
 import com.novapdf.reader.model.NormalizedRect
 import com.novapdf.reader.model.PageTextContent
 import com.novapdf.reader.model.PdfSentence
 import com.novapdf.reader.model.PdfTextLine
 import com.novapdf.reader.model.PdfWord
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.InputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.text.BreakIterator
 import java.util.Locale
 
 class PdfTextExtractor(private val context: Context) {
 
-    private val pageTextCache = HashMap<Int, PageTextContent>()
+    private val tag = "PdfTextExtractor"
+    private val mutex = Mutex()
+
+    private var currentUri: Uri? = null
+    private var activeDocument: PDDocument? = null
+    private var cachedPdfFile: File? = null
+
+    // LRU Cache for extracted page text (holds up to 60 pages in memory)
+    private val pageTextCache = LruCache<Int, PageTextContent>(60)
 
     suspend fun extractPageText(
         uri: Uri,
@@ -26,17 +40,19 @@ class PdfTextExtractor(private val context: Context) {
         pageWidth: Int,
         pageHeight: Int
     ): PageTextContent = withContext(Dispatchers.IO) {
-        pageTextCache[pageIndex]?.let { return@withContext it }
+        // 1. Fast path: check LRU cache first
+        pageTextCache.get(pageIndex)?.let { return@withContext it }
 
-        var pdDocument: PDDocument? = null
-        try {
-            val stream: InputStream? = context.contentResolver.openInputStream(uri)
-            if (stream != null) {
-                pdDocument = PDDocument.load(stream)
-                val totalPages = pdDocument.numberOfPages
+        mutex.withLock {
+            // Re-check cache after acquiring lock
+            pageTextCache.get(pageIndex)?.let { return@withContext it }
 
-                if (pageIndex in 0 until totalPages) {
-                    val page = pdDocument.getPage(pageIndex)
+            ensureDocumentLoaded(uri)
+
+            val doc = activeDocument
+            if (doc != null && pageIndex in 0 until doc.numberOfPages) {
+                try {
+                    val page = doc.getPage(pageIndex)
                     val mediaBox = page.cropBox ?: page.mediaBox
                     val actualWidth = if (mediaBox != null && mediaBox.width > 0) mediaBox.width else pageWidth.toFloat().coerceAtLeast(1f)
                     val actualHeight = if (mediaBox != null && mediaBox.height > 0) mediaBox.height else pageHeight.toFloat().coerceAtLeast(1f)
@@ -154,7 +170,7 @@ class PdfTextExtractor(private val context: Context) {
                         }
                     }
 
-                    stripper.getText(pdDocument)
+                    stripper.getText(doc)
 
                     val pageFullText = pageTextSb.toString().trim()
                     if (pageFullText.isNotBlank()) {
@@ -165,24 +181,53 @@ class PdfTextExtractor(private val context: Context) {
                             lines = linesOnPage,
                             sentences = sentences
                         )
-                        pageTextCache[pageIndex] = content
+                        pageTextCache.put(pageIndex, content)
                         return@withContext content
                     }
+                } catch (e: Exception) {
+                    Log.e(tag, "Error extracting text from page $pageIndex", e)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try {
-                pdDocument?.close()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+
+            val fallback = generateReadableFallbackText(pageIndex)
+            pageTextCache.put(pageIndex, fallback)
+            fallback
+        }
+    }
+
+    private fun ensureDocumentLoaded(uri: Uri) {
+        if (activeDocument != null && uri == currentUri) {
+            return
         }
 
-        val fallback = generateReadableFallbackText(pageIndex)
-        pageTextCache[pageIndex] = fallback
-        fallback
+        closeDocumentInternal()
+
+        try {
+            val memorySetting = MemoryUsageSetting.setupTempFileOnly().setTempDir(context.cacheDir)
+
+            val targetFile = if (uri.scheme == "file" && uri.path != null) {
+                File(uri.path!!)
+            } else {
+                val temp = File(context.cacheDir, "extractor_temp_${System.currentTimeMillis()}.pdf")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(temp).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                cachedPdfFile = temp
+                temp
+            }
+
+            if (targetFile.exists() && targetFile.length() > 0) {
+                activeDocument = PDDocument.load(targetFile, memorySetting)
+                currentUri = uri
+                Log.d(tag, "Successfully loaded PDDocument (${activeDocument?.numberOfPages} pages) using disk scratch memory")
+            } else {
+                Log.w(tag, "Target file does not exist or is empty: ${targetFile.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to load document into PDFBox", e)
+        }
     }
 
     private fun buildSentencesFromWords(
@@ -201,11 +246,9 @@ class PdfTextExtractor(private val context: Context) {
         while (end != BreakIterator.DONE) {
             val sentenceText = fullText.substring(start, end).trim()
             if (sentenceText.isNotBlank()) {
-                // Find all words belonging to this sentence
                 val sentenceWords = words.filter { it.charStart >= start && it.charEnd <= end }
 
                 val lineBounds = if (sentenceWords.isNotEmpty()) {
-                    // Group words by approximate vertical line position (within 1.5% Y difference)
                     sentenceWords.groupBy { (it.bounds.top * 100).toInt() }.values.map { lineWordGroup ->
                         val left = lineWordGroup.minOf { it.bounds.left }
                         val top = lineWordGroup.minOf { it.bounds.top }
@@ -266,10 +309,29 @@ class PdfTextExtractor(private val context: Context) {
     }
 
     fun getCachedPageText(pageIndex: Int): PageTextContent? {
-        return pageTextCache[pageIndex]
+        return pageTextCache.get(pageIndex)
+    }
+
+    private fun closeDocumentInternal() {
+        try {
+            activeDocument?.close()
+            activeDocument = null
+            currentUri = null
+            cachedPdfFile?.let {
+                if (it.exists()) it.delete()
+            }
+            cachedPdfFile = null
+        } catch (e: Exception) {
+            Log.e(tag, "Error closing PDDocument", e)
+        }
     }
 
     fun clear() {
-        pageTextCache.clear()
+        pageTextCache.evictAll()
+    }
+
+    fun close() {
+        clear()
+        closeDocumentInternal()
     }
 }

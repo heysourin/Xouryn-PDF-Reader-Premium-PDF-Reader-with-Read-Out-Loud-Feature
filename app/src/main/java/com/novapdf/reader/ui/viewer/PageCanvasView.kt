@@ -3,18 +3,16 @@ package com.novapdf.reader.ui.viewer
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -26,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,11 +32,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,11 +51,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -69,6 +71,7 @@ import com.novapdf.reader.model.PdfWord
 import com.novapdf.reader.model.SpeechPosition
 import com.novapdf.reader.model.ToolType
 import com.novapdf.reader.ui.annotations.AnnotationOverlayCanvas
+import kotlinx.coroutines.launch
 
 @Composable
 fun PageCanvasView(
@@ -90,34 +93,64 @@ fun PageCanvasView(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
-    val screenWidthPx = (configuration.screenWidthDp * configuration.fontScale * 2.5f).toInt().coerceIn(720, 1400)
+    val screenWidthPx = (configuration.screenWidthDp * configuration.fontScale * 2.2f).toInt().coerceIn(720, 1080)
     val aspectRatio = dimension?.aspectRatio ?: (1f / 1.414f)
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // Autonomous per-page bitmap rendering with LRU cache check
+    // 1. Autonomous per-page bitmap rendering with bounded LRU cache
     val pageBitmap by produceState<Bitmap?>(initialValue = pdfEngine.getCachedPage(pageIndex, screenWidthPx), key1 = pageIndex) {
         if (value == null) {
             value = pdfEngine.renderPage(pageIndex, targetWidth = screenWidthPx)
         }
     }
 
-    // PDFBox per-page extracted text content
-    val textContent by produceState<PageTextContent?>(initialValue = textExtractor.getCachedPageText(pageIndex), key1 = pageIndex) {
-        if (value == null) {
-            value = textExtractor.extractPageText(documentUri, pageIndex, 800, 1100)
+    // 2. On-Demand Text Content: NEVER eagerly extracts on scroll to avoid OOM on 600+ page PDFs!
+    var textContent by remember(pageIndex) {
+        mutableStateOf(textExtractor.getCachedPageText(pageIndex))
+    }
+
+    // Load text only when TTS is speaking this page or pointing at it
+    LaunchedEffect(speechPosition?.pageIndex) {
+        if (speechPosition?.pageIndex == pageIndex && textContent == null) {
+            textContent = textExtractor.extractPageText(documentUri, pageIndex, 800, 1100)
         }
     }
 
-    // Text Selection state
-    val selectedWords = remember { mutableStateListOf<PdfWord>() }
-    var selectionMenuOffset by remember { mutableStateOf<Offset?>(null) }
-    var dragStartOffset by remember { mutableStateOf<Offset?>(null) }
-    var dragCurrentOffset by remember { mutableStateOf<Offset?>(null) }
+    // Load text if user explicitly switches to Text Select mode
+    LaunchedEffect(activeTool) {
+        if (activeTool == ToolType.TEXT_SELECT && textContent == null) {
+            textContent = textExtractor.extractPageText(documentUri, pageIndex, 800, 1100)
+        }
+    }
 
-    // Pulse animation for ReadEra TTS active line highlight
+    // 3. Selection Range State (Word Index based)
+    var selectedStartIndex by remember { mutableIntStateOf(-1) }
+    var selectedEndIndex by remember { mutableIntStateOf(-1) }
+
+    val allWords = remember(textContent) {
+        textContent?.lines?.flatMap { it.words } ?: emptyList()
+    }
+
+    val selectedWords = remember(selectedStartIndex, selectedEndIndex, allWords) {
+        if (selectedStartIndex != -1 && selectedEndIndex != -1 && allWords.isNotEmpty()) {
+            val minIdx = minOf(selectedStartIndex, selectedEndIndex).coerceIn(0, allWords.lastIndex)
+            val maxIdx = maxOf(selectedStartIndex, selectedEndIndex).coerceIn(0, allWords.lastIndex)
+            allWords.subList(minIdx, maxIdx + 1)
+        } else {
+            emptyList()
+        }
+    }
+
+    fun clearSelection() {
+        selectedStartIndex = -1
+        selectedEndIndex = -1
+    }
+
+    // ReadEra TTS pulse animation
     val infiniteTransition = rememberInfiniteTransition(label = "tts_pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
         initialValue = 0.35f,
@@ -129,33 +162,6 @@ fun PageCanvasView(
         label = "pulseAlpha"
     )
 
-    fun updateSelectionFromDrag(start: Offset, end: Offset) {
-        val width = canvasSize.width.toFloat().coerceAtLeast(1f)
-        val height = canvasSize.height.toFloat().coerceAtLeast(1f)
-
-        val minNormX = (minOf(start.x, end.x) / width).coerceIn(0f, 1f)
-        val maxNormX = (maxOf(start.x, end.x) / width).coerceIn(0f, 1f)
-        val minNormY = (minOf(start.y, end.y) / height).coerceIn(0f, 1f)
-        val maxNormY = (maxOf(start.y, end.y) / height).coerceIn(0f, 1f)
-
-        val words = textContent?.lines?.flatMap { it.words } ?: emptyList()
-        val matched = words.filter { word ->
-            word.bounds.right >= minNormX && word.bounds.left <= maxNormX &&
-            word.bounds.bottom >= minNormY && word.bounds.top <= maxNormY
-        }
-
-        selectedWords.clear()
-        selectedWords.addAll(matched)
-
-        if (matched.isNotEmpty()) {
-            val menuX = (matched.first().bounds.left * width).coerceIn(20f, width - 260f)
-            val menuY = ((matched.first().bounds.top * height) - 60f).coerceAtLeast(10f)
-            selectionMenuOffset = Offset(menuX, menuY)
-        } else {
-            selectionMenuOffset = null
-        }
-    }
-
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -165,35 +171,8 @@ fun PageCanvasView(
         shape = RoundedCornerShape(4.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(activeTool, textContent) {
-                    if (activeTool == ToolType.TEXT_SELECT) {
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                dragStartOffset = offset
-                                dragCurrentOffset = offset
-                                updateSelectionFromDrag(offset, offset)
-                            },
-                            onDrag = { change, _ ->
-                                dragCurrentOffset = change.position
-                                dragStartOffset?.let { start ->
-                                    updateSelectionFromDrag(start, change.position)
-                                }
-                            },
-                            onDragEnd = {
-                                dragStartOffset = null
-                                dragCurrentOffset = null
-                            },
-                            onDragCancel = {
-                                dragStartOffset = null
-                                dragCurrentOffset = null
-                            }
-                        )
-                    }
-                }
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+
             // 1. PDF Rendered Bitmap
             val bmp = pageBitmap
             if (bmp != null) {
@@ -214,7 +193,7 @@ fun PageCanvasView(
                 }
             }
 
-            // 2. ReadEra-Style Glowing TTS Live Speech Highlight Overlay
+            // 2. ReadEra-Style Live TTS Speech Glowing Overlay
             if (speechPosition != null && speechPosition.pageIndex == pageIndex) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val pageWidth = size.width
@@ -230,7 +209,6 @@ fun PageCanvasView(
                         val width = normRect.width * pageWidth
                         val height = normRect.height * pageHeight
 
-                        // Glowing yellow / amber background
                         drawRoundRect(
                             color = Color(0xFFFFEB3B).copy(alpha = pulseAlpha),
                             topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
@@ -238,7 +216,6 @@ fun PageCanvasView(
                             cornerRadius = CornerRadius(4.dp.toPx())
                         )
 
-                        // Outline border
                         drawRoundRect(
                             color = Color(0xFFF57F17).copy(alpha = 0.8f),
                             topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
@@ -250,29 +227,7 @@ fun PageCanvasView(
                 }
             }
 
-            // 3. Text Selection Highlights (Translucent Blue with handles)
-            if (selectedWords.isNotEmpty()) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val pageWidth = size.width
-                    val pageHeight = size.height
-
-                    selectedWords.forEach { word ->
-                        val left = word.bounds.left * pageWidth
-                        val top = word.bounds.top * pageHeight
-                        val width = word.bounds.width * pageWidth
-                        val height = word.bounds.height * pageHeight
-
-                        drawRoundRect(
-                            color = Color(0x552196F3),
-                            topLeft = Offset(left, top),
-                            size = Size(width, height),
-                            cornerRadius = CornerRadius(2.dp.toPx())
-                        )
-                    }
-                }
-            }
-
-            // 4. Vector Annotation Drawing Layer
+            // 3. Vector Annotation Drawing Layer
             AnnotationOverlayCanvas(
                 pageIndex = pageIndex,
                 annotations = annotations,
@@ -294,67 +249,218 @@ fun PageCanvasView(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // 5. Floating Text Selection Quick Action Menu
-            if (selectedWords.isNotEmpty() && selectionMenuOffset != null) {
-                val offset = selectionMenuOffset!!
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(offset.x.toInt(), offset.y.toInt()) }
-                ) {
-                    TextSelectionMenu(
-                        onCopyClicked = {
-                            val selectedText = selectedWords.joinToString(" ") { it.text }
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("PDF Text", selectedText))
-                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                            selectedWords.clear()
-                            selectionMenuOffset = null
-                        },
-                        onHighlightClicked = {
-                            val highlight = Annotation.Highlight(
-                                pageIndex = pageIndex,
-                                colorArgb = Color(0xFFFFEB3B).toArgb(),
-                                alpha = 0.45f,
-                                strokeWidth = 20f,
-                                rects = selectedWords.map { it.bounds }
-                            )
-                            onAnnotationAdded(highlight)
-                            selectedWords.clear()
-                            selectionMenuOffset = null
-                        },
-                        onUnderlineClicked = {
-                            val markup = Annotation.TextMarkup(
-                                pageIndex = pageIndex,
-                                colorArgb = Color(0xFFD32F2F).toArgb(),
-                                strokeWidth = 2f,
-                                markupType = ToolType.UNDERLINE,
-                                rects = selectedWords.map { it.bounds }
-                            )
-                            onAnnotationAdded(markup)
-                            selectedWords.clear()
-                            selectionMenuOffset = null
-                        },
-                        onSpeakClicked = {
-                            val firstWord = selectedWords.firstOrNull()
-                            if (firstWord != null) {
-                                val sentence = textContent?.sentences?.firstOrNull { s ->
-                                    s.charOffsetStart <= firstWord.charStart && s.charOffsetEnd >= firstWord.charEnd
+            // 4. Text Selection Interaction & Gesture Layer
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(activeTool, allWords, canvasSize) {
+                        if (activeTool == ToolType.TEXT_SELECT) {
+                            // Direct drag-to-select in TEXT_SELECT mode
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    val normX = (offset.x / canvasSize.width.toFloat()).coerceIn(0f, 1f)
+                                    val normY = (offset.y / canvasSize.height.toFloat()).coerceIn(0f, 1f)
+                                    val idx = findWordIndexAt(allWords, normX, normY)
+                                    if (idx != -1) {
+                                        selectedStartIndex = idx
+                                        selectedEndIndex = idx
+                                    }
+                                },
+                                onDrag = { change, _ ->
+                                    val normX = (change.position.x / canvasSize.width.toFloat()).coerceIn(0f, 1f)
+                                    val normY = (change.position.y / canvasSize.height.toFloat()).coerceIn(0f, 1f)
+                                    val idx = findWordIndexAt(allWords, normX, normY)
+                                    if (idx != -1) {
+                                        selectedEndIndex = idx
+                                    }
                                 }
-                                val sIndex = sentence?.sentenceIndex ?: 0
-                                onSpeakFromSentenceRequested(sIndex)
+                            )
+                        } else if (activeTool == ToolType.PAN) {
+                            // Standard Reader Mode: Long-press anywhere to select text!
+                            detectTapGestures(
+                                onLongPress = { touchOffset ->
+                                    scope.launch {
+                                        var words = allWords
+                                        if (words.isEmpty()) {
+                                            val extracted = textExtractor.extractPageText(
+                                                documentUri, pageIndex, canvasSize.width, canvasSize.height
+                                            )
+                                            textContent = extracted
+                                            words = extracted.lines.flatMap { it.words }
+                                        }
+
+                                        if (words.isNotEmpty()) {
+                                            val normX = (touchOffset.x / canvasSize.width.toFloat()).coerceIn(0f, 1f)
+                                            val normY = (touchOffset.y / canvasSize.height.toFloat()).coerceIn(0f, 1f)
+                                            val idx = findWordIndexAt(words, normX, normY)
+                                            if (idx != -1) {
+                                                selectedStartIndex = idx
+                                                selectedEndIndex = idx
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "No text found on this page", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                onTap = {
+                                    if (selectedStartIndex != -1) {
+                                        clearSelection()
+                                    }
+                                }
+                            )
+                        }
+                    }
+            ) {
+                // Draw Selection Highlight Rectangles
+                if (selectedWords.isNotEmpty()) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val pageWidth = size.width
+                        val pageHeight = size.height
+
+                        selectedWords.forEach { word ->
+                            val left = word.bounds.left * pageWidth
+                            val top = word.bounds.top * pageHeight
+                            val width = word.bounds.width * pageWidth
+                            val height = word.bounds.height * pageHeight
+
+                            drawRoundRect(
+                                color = Color(0x502196F3),
+                                topLeft = Offset(left, top),
+                                size = Size(width, height),
+                                cornerRadius = CornerRadius(2.dp.toPx())
+                            )
+                        }
+                    }
+
+                    // Start Selection Handle (Teardrop pin)
+                    val startWord = selectedWords.first()
+                    val startHandleX = (startWord.bounds.left * canvasSize.width).coerceIn(0f, canvasSize.width.toFloat())
+                    val startHandleY = (startWord.bounds.bottom * canvasSize.height).coerceIn(0f, canvasSize.height.toFloat())
+                    val startLineHeight = (startWord.bounds.height * canvasSize.height).coerceAtLeast(16f)
+
+                    SelectionHandle(
+                        isStart = true,
+                        anchorOffset = Offset(startHandleX, startHandleY),
+                        lineHeight = startLineHeight,
+                        onHandleDragged = { dragDelta ->
+                            val newX = (startHandleX + dragDelta.x) / canvasSize.width.toFloat()
+                            val newY = (startHandleY + dragDelta.y) / canvasSize.height.toFloat()
+                            val newIdx = findWordIndexAt(allWords, newX, newY)
+                            if (newIdx != -1) {
+                                selectedStartIndex = newIdx
                             }
-                            selectedWords.clear()
-                            selectionMenuOffset = null
-                        },
-                        onDismissClicked = {
-                            selectedWords.clear()
-                            selectionMenuOffset = null
                         }
                     )
+
+                    // End Selection Handle (Teardrop pin)
+                    val endWord = selectedWords.last()
+                    val endHandleX = (endWord.bounds.right * canvasSize.width).coerceIn(0f, canvasSize.width.toFloat())
+                    val endHandleY = (endWord.bounds.bottom * canvasSize.height).coerceIn(0f, canvasSize.height.toFloat())
+                    val endLineHeight = (endWord.bounds.height * canvasSize.height).coerceAtLeast(16f)
+
+                    SelectionHandle(
+                        isStart = false,
+                        anchorOffset = Offset(endHandleX, endHandleY),
+                        lineHeight = endLineHeight,
+                        onHandleDragged = { dragDelta ->
+                            val newX = (endHandleX + dragDelta.x) / canvasSize.width.toFloat()
+                            val newY = (endHandleY + dragDelta.y) / canvasSize.height.toFloat()
+                            val newIdx = findWordIndexAt(allWords, newX, newY)
+                            if (newIdx != -1) {
+                                selectedEndIndex = newIdx
+                            }
+                        }
+                    )
+
+                    // Floating Action Menu positioned right above the selection
+                    val firstWord = selectedWords.first()
+                    val menuX = (firstWord.bounds.left * canvasSize.width - 20f).coerceIn(16f, (canvasSize.width - 340f).coerceAtLeast(16f))
+                    val menuY = if (firstWord.bounds.top * canvasSize.height > 60f) {
+                        (firstWord.bounds.top * canvasSize.height) - 54f
+                    } else {
+                        (endWord.bounds.bottom * canvasSize.height) + 12f
+                    }
+
+                    Box(
+                        modifier = Modifier.offset { IntOffset(menuX.toInt(), menuY.toInt()) }
+                    ) {
+                        TextSelectionMenu(
+                            onCopyClicked = {
+                                val text = selectedWords.joinToString(" ") { it.text }
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("PDF Text", text))
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                clearSelection()
+                            },
+                            onHighlightClicked = {
+                                val highlight = Annotation.Highlight(
+                                    pageIndex = pageIndex,
+                                    colorArgb = Color(0xFFFFEB3B).toArgb(),
+                                    alpha = 0.45f,
+                                    strokeWidth = 20f,
+                                    rects = selectedWords.map { it.bounds }
+                                )
+                                onAnnotationAdded(highlight)
+                                clearSelection()
+                            },
+                            onUnderlineClicked = {
+                                val markup = Annotation.TextMarkup(
+                                    pageIndex = pageIndex,
+                                    colorArgb = Color(0xFF1976D2).toArgb(),
+                                    strokeWidth = 2f,
+                                    markupType = ToolType.UNDERLINE,
+                                    rects = selectedWords.map { it.bounds }
+                                )
+                                onAnnotationAdded(markup)
+                                clearSelection()
+                            },
+                            onStrikeoutClicked = {
+                                val markup = Annotation.TextMarkup(
+                                    pageIndex = pageIndex,
+                                    colorArgb = Color(0xFFD32F2F).toArgb(),
+                                    strokeWidth = 2f,
+                                    markupType = ToolType.STRIKEOUT,
+                                    rects = selectedWords.map { it.bounds }
+                                )
+                                onAnnotationAdded(markup)
+                                clearSelection()
+                            },
+                            onSpeakClicked = {
+                                val first = selectedWords.firstOrNull()
+                                if (first != null) {
+                                    val sentence = textContent?.sentences?.firstOrNull { s ->
+                                        s.charOffsetStart <= first.charStart && s.charOffsetEnd >= first.charEnd
+                                    }
+                                    val sIndex = sentence?.sentenceIndex ?: 0
+                                    onSpeakFromSentenceRequested(sIndex)
+                                }
+                                clearSelection()
+                            },
+                            onSelectAllClicked = {
+                                if (allWords.isNotEmpty()) {
+                                    selectedStartIndex = 0
+                                    selectedEndIndex = allWords.lastIndex
+                                }
+                            },
+                            onShareClicked = {
+                                val text = selectedWords.joinToString(" ") { it.text }
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, text)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Share PDF Text"))
+                                clearSelection()
+                            },
+                            onDismissClicked = {
+                                clearSelection()
+                            }
+                        )
+                    }
                 }
             }
 
-            // 6. Subtle Page Number Pill
+            // 5. Page Number Pill
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -371,4 +477,100 @@ fun PageCanvasView(
             }
         }
     }
+}
+
+/**
+ * Draggable selection teardrop pin handle
+ */
+@Composable
+private fun SelectionHandle(
+    isStart: Boolean,
+    anchorOffset: Offset,
+    lineHeight: Float,
+    onHandleDragged: (dragDelta: Offset) -> Unit
+) {
+    var accumulatedDelta by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = Modifier
+            .offset {
+                // Position handle centered on anchor offset
+                val x = if (isStart) anchorOffset.x - 18.dp.toPx() else anchorOffset.x - 2.dp.toPx()
+                val y = anchorOffset.y - lineHeight
+                IntOffset(x.toInt(), y.toInt())
+            }
+            .size(36.dp, (lineHeight.dp + 24.dp))
+            .pointerInput(isStart, anchorOffset) {
+                detectDragGestures(
+                    onDragStart = { accumulatedDelta = Offset.Zero },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        accumulatedDelta += dragAmount
+                        onHandleDragged(accumulatedDelta)
+                    }
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val handleColor = Color(0xFF1976D2)
+            val lineX = if (isStart) 18.dp.toPx() else 2.dp.toPx()
+
+            // Vertical cursor bar
+            drawLine(
+                color = handleColor,
+                start = Offset(lineX, 0f),
+                end = Offset(lineX, lineHeight),
+                strokeWidth = 2.5.dp.toPx()
+            )
+
+            // Teardrop pin circle below the line
+            val circleRadius = 7.dp.toPx()
+            val circleCenterX = if (isStart) lineX - circleRadius + 2.dp.toPx() else lineX + circleRadius - 2.dp.toPx()
+            val circleCenterY = lineHeight + circleRadius
+
+            drawCircle(
+                color = handleColor,
+                radius = circleRadius,
+                center = Offset(circleCenterX, circleCenterY)
+            )
+        }
+    }
+}
+
+/**
+ * Robust word hit-testing supporting exact bounds and proximity line matching
+ */
+private fun findWordIndexAt(words: List<PdfWord>, normX: Float, normY: Float): Int {
+    if (words.isEmpty()) return -1
+
+    // 1. Direct hit on bounding box (with slight padding for touch precision)
+    val direct = words.indexOfFirst { word ->
+        val padX = 0.015f
+        val padY = 0.012f
+        normX >= (word.bounds.left - padX) && normX <= (word.bounds.right + padX) &&
+        normY >= (word.bounds.top - padY) && normY <= (word.bounds.bottom + padY)
+    }
+    if (direct != -1) return direct
+
+    // 2. Line proximity match: closest word on the same vertical line
+    val lineCandidates = words.mapIndexed { idx, word -> idx to word }.filter { (_, word) ->
+        val midY = (word.bounds.top + word.bounds.bottom) / 2f
+        kotlin.math.abs(midY - normY) < 0.025f
+    }
+    if (lineCandidates.isNotEmpty()) {
+        return lineCandidates.minByOrNull { (_, word) ->
+            val midX = (word.bounds.left + word.bounds.right) / 2f
+            kotlin.math.abs(midX - normX)
+        }?.first ?: -1
+    }
+
+    // 3. Overall closest word
+    return words.indices.minByOrNull { idx ->
+        val word = words[idx]
+        val midX = (word.bounds.left + word.bounds.right) / 2f
+        val midY = (word.bounds.top + word.bounds.bottom) / 2f
+        val dx = midX - normX
+        val dy = (midY - normY) * 2f // Penalize vertical distance more
+        dx * dx + dy * dy
+    } ?: -1
 }

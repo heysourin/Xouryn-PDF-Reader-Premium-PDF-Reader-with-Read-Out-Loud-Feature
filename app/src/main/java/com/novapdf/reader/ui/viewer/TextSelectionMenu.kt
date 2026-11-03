@@ -1,9 +1,7 @@
 package com.novapdf.reader.ui.viewer
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -14,8 +12,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -27,7 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,21 +37,24 @@ fun TextSelectionMenu(
     onCopyClicked: () -> Unit,
     onHighlightClicked: () -> Unit,
     onUnderlineClicked: () -> Unit,
+    onStrikeoutClicked: () -> Unit,
     onSpeakClicked: () -> Unit,
+    onSelectAllClicked: () -> Unit,
+    onShareClicked: () -> Unit,
     onDismissClicked: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier
-            .shadow(8.dp, RoundedCornerShape(12.dp))
-            .clip(RoundedCornerShape(12.dp)),
+            .shadow(10.dp, RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(14.dp)),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 6.dp
+        tonalElevation = 8.dp
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             MenuItem(
                 icon = Icons.Default.ContentCopy,
@@ -72,9 +75,27 @@ fun TextSelectionMenu(
             )
 
             MenuItem(
+                icon = Icons.Default.FormatStrikethrough,
+                label = "Strike",
+                onClick = onStrikeoutClicked
+            )
+
+            MenuItem(
                 icon = Icons.Default.RecordVoiceOver,
                 label = "Speak",
                 onClick = onSpeakClicked
+            )
+
+            MenuItem(
+                icon = Icons.Default.SelectAll,
+                label = "All",
+                onClick = onSelectAllClicked
+            )
+
+            MenuItem(
+                icon = Icons.Default.Share,
+                label = "Share",
+                onClick = onShareClicked
             )
 
             IconButton(
@@ -102,16 +123,16 @@ private fun MenuItem(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
             .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
             tint = MaterialTheme.colorScheme.primary
         )
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(3.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
@@ -119,4 +140,3 @@ private fun MenuItem(
         )
     }
 }
-

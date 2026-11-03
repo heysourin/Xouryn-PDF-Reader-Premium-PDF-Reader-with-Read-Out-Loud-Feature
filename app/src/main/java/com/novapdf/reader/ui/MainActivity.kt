@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity() {
         isLoading.value = true
         lifecycleScope.launch {
             try {
+                textExtractor.close()
                 val doc = pdfEngine.openDocument(uri)
                 activeDocument.value = doc
 
@@ -294,6 +295,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         ttsController.destroy()
         pdfEngine.close()
+        textExtractor.close()
     }
 }
 

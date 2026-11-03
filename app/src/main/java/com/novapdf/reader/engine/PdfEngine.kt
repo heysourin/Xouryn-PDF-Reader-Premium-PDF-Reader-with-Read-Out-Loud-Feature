@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.util.LruCache
 import com.novapdf.reader.model.PageDimension
 import com.novapdf.reader.model.PdfDocumentModel
@@ -19,13 +20,15 @@ import java.io.FileOutputStream
 
 class PdfEngine(private val context: Context) {
 
+    private val tag = "PdfEngine"
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
     private val rendererMutex = Mutex()
+    private var cachedTempFile: File? = null
 
-    // 96 MB Cache for rendered page bitmaps
+    // Bounded LRU Cache for rendered page bitmaps (max 64MB)
     private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-    private val cacheSize = (maxMemory / 6).coerceIn(32 * 1024, 96 * 1024)
+    private val cacheSize = (maxMemory / 8).coerceIn(24 * 1024, 64 * 1024)
     private val bitmapCache = object : LruCache<String, Bitmap>(cacheSize) {
         override fun sizeOf(key: String, bitmap: Bitmap): Int {
             return bitmap.byteCount / 1024
@@ -35,7 +38,7 @@ class PdfEngine(private val context: Context) {
     suspend fun openDocument(uri: Uri): PdfDocumentModel = withContext(Dispatchers.IO) {
         close()
 
-        val pfd = if (uri.scheme == "file") {
+        val pfd = if (uri.scheme == "file" && uri.path != null) {
             ParcelFileDescriptor.open(File(uri.path!!), ParcelFileDescriptor.MODE_READ_ONLY)
         } else {
             try {
@@ -65,7 +68,7 @@ class PdfEngine(private val context: Context) {
                     defaultHeight = firstPage.height
                     firstPage.close()
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e(tag, "Failed to sample first page dimension", e)
                 }
             }
 
@@ -90,7 +93,9 @@ class PdfEngine(private val context: Context) {
     }
 
     private fun copyUriToCacheAndOpen(uri: Uri): ParcelFileDescriptor {
-        val tempFile = File(context.cacheDir, "current_doc_${System.currentTimeMillis()}.pdf")
+        cachedTempFile?.delete()
+        val tempFile = File(context.cacheDir, "engine_doc_${System.currentTimeMillis()}.pdf")
+        cachedTempFile = tempFile
         context.contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(tempFile).use { output ->
                 input.copyTo(output)
@@ -105,8 +110,7 @@ class PdfEngine(private val context: Context) {
         targetHeight: Int = 1920,
         highRes: Boolean = false
     ): Bitmap? = withContext(Dispatchers.Default) {
-        // Clamp render dimensions to screen bounds to avoid gigantic 80MB bitmaps
-        val displayWidth = targetWidth.coerceIn(400, if (highRes) 1600 else 1200)
+        val displayWidth = targetWidth.coerceIn(400, if (highRes) 1400 else 1080)
         val cacheKey = "${pageIndex}_w$displayWidth"
 
         bitmapCache.get(cacheKey)?.let { return@withContext it }
@@ -121,12 +125,17 @@ class PdfEngine(private val context: Context) {
                 val pageWidth = page.width.toFloat()
                 val pageHeight = page.height.toFloat()
 
-                // Calculate scaled dimensions preserving aspect ratio
                 val scale = displayWidth.toFloat() / pageWidth
                 val bmpWidth = displayWidth
                 val bmpHeight = (pageHeight * scale).toInt().coerceAtLeast(1)
 
-                val bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
+                val bitmap = try {
+                    Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
+                } catch (oom: OutOfMemoryError) {
+                    bitmapCache.evictAll()
+                    System.gc()
+                    Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
+                }
                 bitmap.eraseColor(Color.WHITE)
 
                 val matrix = Matrix().apply {
@@ -137,7 +146,12 @@ class PdfEngine(private val context: Context) {
                 bitmapCache.put(cacheKey, bitmap)
                 bitmap
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(tag, "Error rendering page $pageIndex", e)
+                null
+            } catch (oom: OutOfMemoryError) {
+                Log.e(tag, "OOM in renderPage $pageIndex, clearing cache", oom)
+                bitmapCache.evictAll()
+                System.gc()
                 null
             } finally {
                 page?.close()
@@ -146,7 +160,7 @@ class PdfEngine(private val context: Context) {
     }
 
     fun getCachedPage(pageIndex: Int, targetWidth: Int = 1080): Bitmap? {
-        val displayWidth = targetWidth.coerceIn(400, 1200)
+        val displayWidth = targetWidth.coerceIn(400, 1080)
         return bitmapCache.get("${pageIndex}_w$displayWidth")
     }
 
@@ -161,8 +175,10 @@ class PdfEngine(private val context: Context) {
             fileDescriptor?.close()
             fileDescriptor = null
             clearCache()
+            cachedTempFile?.delete()
+            cachedTempFile = null
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(tag, "Error closing PdfEngine", e)
         }
     }
 }
