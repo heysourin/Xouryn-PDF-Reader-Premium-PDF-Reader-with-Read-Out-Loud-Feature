@@ -8,7 +8,7 @@ JDK_DIR="$TOOLS_DIR/jdk17"
 GRADLE_DIR="$TOOLS_DIR/gradle-8.11.1"
 
 echo "===================================================="
-echo "   NovaPDF Automated Local APK Build Script"
+echo "   xouryn pdf reader Automated APK Build Script"
 echo "===================================================="
 
 mkdir -p "$TOOLS_DIR"
@@ -45,16 +45,20 @@ echo "✔ Using Gradle: $("$GRADLE_DIR/bin/gradle" --version 2>&1 | head -n 3 | 
 # Generate wrapper jar if needed
 "$GRADLE_DIR/bin/gradle" wrapper --gradle-version 8.11.1 >/dev/null 2>&1 || true
 
-# 4. Compile NovaPDF Debug APK
+# 4. Compile xouryn pdf reader APK
 cd "$PROJECT_DIR"
-echo "🔨 Compiling NovaPDF Debug APK..."
+echo "🔨 Compiling xouryn pdf reader APK..."
 "$GRADLE_DIR/bin/gradle" assembleDebug
 
 OUTPUT_APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-FINAL_APK="$PROJECT_DIR/NovaPDF-debug.apk"
+FINAL_APK="$PROJECT_DIR/xouryn-pdf-reader.apk"
+ALT_APK="$PROJECT_DIR/xouryn_pdf_reader.apk"
+LEGACY_APK="$PROJECT_DIR/NovaPDF-debug.apk"
 
 if [ -f "$OUTPUT_APK" ]; then
     cp "$OUTPUT_APK" "$FINAL_APK"
+    cp "$OUTPUT_APK" "$ALT_APK"
+    cp "$OUTPUT_APK" "$LEGACY_APK"
     echo ""
     echo "===================================================="
     echo "🎉 SUCCESS! Your APK is ready:"
@@ -63,7 +67,7 @@ if [ -f "$OUTPUT_APK" ]; then
     echo ""
     ls -lh "$FINAL_APK"
     echo ""
-    echo "You can now send or transfer 'NovaPDF-debug.apk' directly to your phone or tablet!"
+    echo "You can now install 'xouryn-pdf-reader.apk' directly on your phone or tablet!"
 else
     echo "❌ Build did not produce an APK. Please check logs."
     exit 1

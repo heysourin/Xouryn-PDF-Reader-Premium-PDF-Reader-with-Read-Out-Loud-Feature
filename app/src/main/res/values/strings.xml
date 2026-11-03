@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">NovaPDF</string>
+    <string name="app_name">xouryn pdf reader</string>
     <string name="open_pdf">Open PDF</string>
     <string name="read_out_loud">Read Out Loud</string>
     <string name="stop_reading">Stop Reading</string>

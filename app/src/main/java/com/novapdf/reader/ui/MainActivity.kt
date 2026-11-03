@@ -275,7 +275,7 @@ class MainActivity : ComponentActivity() {
      * viewing, annotating, and the ReadEra TTS speech engine without having to manually transfer files.
      */
     private suspend fun getOrCreateSampleDocument(): Uri = withContext(Dispatchers.IO) {
-        val sampleFile = File(cacheDir, "NovaPDF_User_Guide.pdf")
+        val sampleFile = File(cacheDir, "xouryn_user_guide.pdf")
         if (!sampleFile.exists()) {
             val doc = PdfDocument()
             val paint = Paint().apply {
@@ -299,11 +299,11 @@ class MainActivity : ComponentActivity() {
             val page1Info = PdfDocument.PageInfo.Builder(595, 842, 1).create()
             val page1 = doc.startPage(page1Info)
             val canvas1 = page1.canvas
-            canvas1.drawText("NovaPDF Reader & Editor", 40f, 60f, titlePaint)
+            canvas1.drawText("xouryn pdf reader", 40f, 60f, titlePaint)
             canvas1.drawText("High-Performance Android PDF Workspace", 40f, 85f, subtitlePaint)
 
             val p1Lines = listOf(
-                "Welcome to NovaPDF! This app brings professional desktop-class PDF tools",
+                "Welcome to xouryn pdf reader! This app brings professional desktop-class PDF tools",
                 "to Android smartphones, tablets, foldables, and Chromebooks.",
                 "",
                 "Key Capabilities:",
@@ -334,7 +334,7 @@ class MainActivity : ComponentActivity() {
 
             val p2Lines = listOf(
                 "Tablets and foldables offer magnificent canvas area for document editing.",
-                "NovaPDF adapts dynamically to your screen size and orientation:",
+                "xouryn pdf reader adapts dynamically to your screen size and orientation:",
                 "",
                 "• Dual-Page Book Spread: On tablets in landscape mode, pages appear side-by-side",
                 "  just like reading a printed physical book or open binder.",
