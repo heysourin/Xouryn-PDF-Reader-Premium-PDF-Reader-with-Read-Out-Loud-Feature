@@ -120,3 +120,4 @@ sealed class Annotation(
         val author: String = "User"
     ) : Annotation(id, pageIndex, colorArgb, 1.0f, 1.0f)
 }
+

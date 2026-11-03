@@ -179,3 +179,4 @@ class SpeechForegroundService : Service() {
         }
     }
 }
+

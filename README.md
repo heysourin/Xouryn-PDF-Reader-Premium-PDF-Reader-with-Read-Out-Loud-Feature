@@ -109,3 +109,4 @@ Inspection of `Xodo.apk` and `ReadEra.apk` provided several foundational finding
 # Install on connected device/emulator
 ./gradlew installDebug
 ```
+

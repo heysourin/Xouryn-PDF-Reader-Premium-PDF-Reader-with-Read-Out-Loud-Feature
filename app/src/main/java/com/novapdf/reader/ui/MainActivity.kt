@@ -289,3 +289,4 @@ class MainActivity : ComponentActivity() {
         pdfEngine.close()
     }
 }
+

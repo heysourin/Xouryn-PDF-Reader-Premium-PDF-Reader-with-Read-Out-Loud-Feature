@@ -69,3 +69,4 @@ data class PageTextContent(
     val lines: List<PdfTextLine> = emptyList(),
     val sentences: List<PdfSentence> = emptyList()
 )
+

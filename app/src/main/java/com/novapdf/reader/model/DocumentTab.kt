@@ -14,3 +14,4 @@ data class DocumentTab(
     val isModified: Boolean = false,
     val lastOpenedTimestamp: Long = System.currentTimeMillis()
 )
+

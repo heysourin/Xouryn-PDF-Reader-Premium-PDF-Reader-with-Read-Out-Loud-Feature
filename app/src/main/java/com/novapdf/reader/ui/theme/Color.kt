@@ -33,3 +33,4 @@ val AnnotationColors = listOf(
     Color(0xFFFFEB3B), // Yellow Highlighter
     Color(0xFFFF7043)  // Orange
 )
+

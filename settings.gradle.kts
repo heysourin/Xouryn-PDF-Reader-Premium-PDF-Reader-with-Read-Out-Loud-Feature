@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NovaPDF"
 include(":app")
+

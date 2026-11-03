@@ -52,3 +52,4 @@ data class TtsSettings(
     val highlightColorArgb: Int = 0x66FFEB3B.toInt(), // Glowing amber yellow
     val sleepTimerRemainingSeconds: Long? = null
 )
+
