@@ -8,7 +8,7 @@ build/
 captures/
 .externalNativeBuild
 .cxx
-*.apk
+# *.apk
 *.dmg
 *.iso
 *.zip
