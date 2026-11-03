@@ -56,6 +56,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -90,9 +91,11 @@ fun PageCanvasView(
     onEraseRequested: (normalizedX: Float, normalizedY: Float) -> Unit,
     onTapToReadRequested: (normalizedX: Float, normalizedY: Float) -> Unit,
     onSpeakFromSentenceRequested: (sentenceIndex: Int) -> Unit,
+    onPageTapped: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val configuration = LocalConfiguration.current
@@ -305,7 +308,11 @@ fun PageCanvasView(
                                 },
                                 onTap = {
                                     if (selectedStartIndex != -1) {
+                                        // Dismiss selection first if text was selected
                                         clearSelection()
+                                    } else {
+                                        // Xodo-style single tap toggles immersive fullscreen!
+                                        onPageTapped()
                                     }
                                 }
                             )
@@ -373,13 +380,32 @@ fun PageCanvasView(
                         }
                     )
 
-                    // Floating Action Menu positioned right above the selection
+                    // Floating Action Menu: Cleanly calculated with density & clearance so it NEVER overlaps text or handles!
                     val firstWord = selectedWords.first()
-                    val menuX = (firstWord.bounds.left * canvasSize.width - 20f).coerceIn(16f, (canvasSize.width - 340f).coerceAtLeast(16f))
-                    val menuY = if (firstWord.bounds.top * canvasSize.height > 60f) {
-                        (firstWord.bounds.top * canvasSize.height) - 54f
+                    val menuEstimatedWidthPx = with(density) { 340.dp.toPx() }
+                    val menuHeightPx = with(density) { 52.dp.toPx() }
+                    val menuMarginPx = with(density) { 16.dp.toPx() }
+
+                    // Horizontal position: Center above the selected words range
+                    val selLeftPx = firstWord.bounds.left * canvasSize.width
+                    val selRightPx = endWord.bounds.right * canvasSize.width
+                    val selCenterXPx = (selLeftPx + selRightPx) / 2f
+                    val menuX = (selCenterXPx - menuEstimatedWidthPx / 2f).coerceIn(
+                        with(density) { 8.dp.toPx() },
+                        (canvasSize.width - menuEstimatedWidthPx - with(density) { 8.dp.toPx() }).coerceAtLeast(with(density) { 8.dp.toPx() })
+                    )
+
+                    // Vertical position: Ensure it is placed comfortably ABOVE the top of the first word
+                    val startWordTopPx = firstWord.bounds.top * canvasSize.height
+                    val endWordBottomPx = endWord.bounds.bottom * canvasSize.height
+
+                    val spaceAbove = startWordTopPx - menuHeightPx - menuMarginPx
+                    val menuY = if (spaceAbove >= with(density) { 16.dp.toPx() }) {
+                        spaceAbove
                     } else {
-                        (endWord.bounds.bottom * canvasSize.height) + 12f
+                        // Near the top edge of page: place comfortably BELOW the last selected word
+                        // Leave 34dp room for the teardrop pin handle
+                        endWordBottomPx + with(density) { 34.dp.toPx() }
                     }
 
                     Box(
@@ -494,7 +520,6 @@ private fun SelectionHandle(
     Box(
         modifier = Modifier
             .offset {
-                // Position handle centered on anchor offset
                 val x = if (isStart) anchorOffset.x - 18.dp.toPx() else anchorOffset.x - 2.dp.toPx()
                 val y = anchorOffset.y - lineHeight
                 IntOffset(x.toInt(), y.toInt())

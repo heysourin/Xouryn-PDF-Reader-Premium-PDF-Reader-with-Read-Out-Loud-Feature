@@ -9,6 +9,7 @@ import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -17,16 +18,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.novapdf.reader.engine.AnnotationEngine
+import com.novapdf.reader.engine.DocumentStorageManager
 import com.novapdf.reader.engine.PdfEngine
 import com.novapdf.reader.engine.PdfTextExtractor
 import com.novapdf.reader.model.DocumentTab
@@ -44,10 +46,13 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
+    private val tag = "NovaPDF_Main"
+
     private lateinit var pdfEngine: PdfEngine
     private lateinit var textExtractor: PdfTextExtractor
     private lateinit var annotationEngine: AnnotationEngine
     private lateinit var ttsController: TtsController
+    private lateinit var documentStorageManager: DocumentStorageManager
 
     private val documentTabs = mutableStateListOf<DocumentTab>()
     private val activeTabId = mutableStateOf<String?>(null)
@@ -58,7 +63,15 @@ class MainActivity : ComponentActivity() {
     private val openPdfLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        uri?.let { openPdfUri(it) }
+        uri?.let {
+            try {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                contentResolver.takePersistableUriPermission(it, takeFlags)
+            } catch (e: Exception) {
+                Log.w(tag, "Could not take persistable permission for $it", e)
+            }
+            openPdfUri(it)
+        }
     }
 
     // Notification Permission Launcher (Android 13+)
@@ -80,6 +93,7 @@ class MainActivity : ComponentActivity() {
         textExtractor = PdfTextExtractor(applicationContext)
         annotationEngine = AnnotationEngine()
         ttsController = TtsController(applicationContext, lifecycleScope)
+        documentStorageManager = DocumentStorageManager(applicationContext)
 
         checkNotificationPermissions()
 
@@ -96,17 +110,25 @@ class MainActivity : ComponentActivity() {
                         CircularProgressIndicator()
                     }
                 } else {
+                    val currentTabId = activeTabId.value
+                    val initialPage = if (currentTabId != null) {
+                        documentStorageManager.getPagePosition(currentTabId, 0)
+                    } else {
+                        0
+                    }
+
                     PdfViewerScreen(
                         document = doc,
                         tabs = documentTabs.toList(),
-                        activeTabId = activeTabId.value,
+                        activeTabId = currentTabId,
+                        initialPageIndex = initialPage,
                         pdfEngine = pdfEngine,
                         textExtractor = textExtractor,
                         annotationEngine = annotationEngine,
                         ttsController = ttsController,
                         onTabSelected = { tab ->
                             activeTabId.value = tab.id
-                            openPdfUri(tab.uri, existingTabId = tab.id)
+                            openPdfUri(tab.uri, existingTabId = tab.id, initialPage = tab.currentPageIndex)
                         },
                         onTabClosed = { tab ->
                             closeTab(tab)
@@ -116,6 +138,18 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenPdfPickerRequested = {
                             openPdfLauncher.launch(arrayOf("application/pdf"))
+                        },
+                        onPageChanged = { pageIndex ->
+                            activeTabId.value?.let { currentId ->
+                                documentStorageManager.savePagePosition(currentId, pageIndex)
+                                val idx = documentTabs.indexOfFirst { it.id == currentId }
+                                if (idx != -1) {
+                                    documentTabs[idx] = documentTabs[idx].copy(currentPageIndex = pageIndex)
+                                }
+                            }
+                        },
+                        onFullScreenToggled = { isFullScreen ->
+                            setSystemBarsVisible(!isFullScreen)
                         }
                     )
                 }
@@ -135,34 +169,60 @@ class MainActivity : ComponentActivity() {
         if (uri != null) {
             openPdfUri(uri)
         } else {
-            // Load or create default showcase PDF document
-            lifecycleScope.launch {
-                val sampleUri = getOrCreateSampleDocument()
-                openPdfUri(sampleUri)
+            // Restore previously saved tabs from memory storage
+            val (savedTabs, lastActiveId) = documentStorageManager.loadSavedTabs()
+            if (savedTabs.isNotEmpty()) {
+                documentTabs.clear()
+                documentTabs.addAll(savedTabs)
+                val targetTab = savedTabs.find { it.id == lastActiveId } ?: savedTabs.first()
+                activeTabId.value = targetTab.id
+                openPdfUri(targetTab.uri, existingTabId = targetTab.id, initialPage = targetTab.currentPageIndex)
+            } else {
+                // First-time user: generate and open the sample showcase guide
+                lifecycleScope.launch {
+                    val sampleUri = getOrCreateSampleDocument()
+                    openPdfUri(sampleUri)
+                }
             }
         }
     }
 
-    private fun openPdfUri(uri: Uri, existingTabId: String? = null) {
+    private fun openPdfUri(uri: Uri, existingTabId: String? = null, initialPage: Int = 0) {
         isLoading.value = true
         lifecycleScope.launch {
             try {
+                val tabId = existingTabId ?: UUID.randomUUID().toString()
+
+                // Persist the document locally so it NEVER goes away when reopening the app
+                val persistentUri = documentStorageManager.makeDocumentPersistent(tabId, uri)
+
                 textExtractor.close()
-                val doc = pdfEngine.openDocument(uri)
+                val doc = pdfEngine.openDocument(persistentUri)
                 activeDocument.value = doc
 
-                val tabId = existingTabId ?: UUID.randomUUID().toString()
                 if (existingTabId == null) {
                     val newTab = DocumentTab(
                         id = tabId,
                         title = doc.title,
-                        uri = uri
+                        uri = persistentUri,
+                        currentPageIndex = initialPage
                     )
                     documentTabs.add(newTab)
+                } else {
+                    val idx = documentTabs.indexOfFirst { it.id == tabId }
+                    if (idx != -1) {
+                        documentTabs[idx] = documentTabs[idx].copy(
+                            uri = persistentUri,
+                            currentPageIndex = initialPage
+                        )
+                    }
                 }
                 activeTabId.value = tabId
+
+                // Persist tabs state to storage
+                documentStorageManager.saveTabs(documentTabs.toList(), tabId)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(tag, "Failed to open PDF $uri", e)
             } finally {
                 isLoading.value = false
             }
@@ -173,16 +233,30 @@ class MainActivity : ComponentActivity() {
         val index = documentTabs.indexOfFirst { it.id == tab.id }
         if (index != -1) {
             documentTabs.removeAt(index)
+            documentStorageManager.deleteDocumentForTab(tab.id)
+
             if (activeTabId.value == tab.id) {
                 if (documentTabs.isNotEmpty()) {
                     val nextTab = documentTabs.last()
                     activeTabId.value = nextTab.id
-                    openPdfUri(nextTab.uri, existingTabId = nextTab.id)
+                    openPdfUri(nextTab.uri, existingTabId = nextTab.id, initialPage = nextTab.currentPageIndex)
                 } else {
                     activeDocument.value = null
                     activeTabId.value = null
                 }
             }
+            documentStorageManager.saveTabs(documentTabs.toList(), activeTabId.value)
+        }
+    }
+
+    fun setSystemBarsVisible(visible: Boolean) {
+        val decorView = window?.decorView ?: return
+        val insetsController = WindowCompat.getInsetsController(window, decorView)
+        insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (visible) {
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 
@@ -221,31 +295,28 @@ class MainActivity : ComponentActivity() {
                 isAntiAlias = true
             }
 
-            // Page 1: Overview & ReadEra TTS
-            val page1Info = PdfDocument.PageInfo.Builder(595, 842, 1).create() // A4 points
+            // Page 1: Welcome & Overview
+            val page1Info = PdfDocument.PageInfo.Builder(595, 842, 1).create()
             val page1 = doc.startPage(page1Info)
             val canvas1 = page1.canvas
-            canvas1.drawText("NovaPDF Reader & Annotator", 40f, 60f, titlePaint)
-            canvas1.drawText("Designed for Mobile, Tablets & Foldables", 40f, 85f, subtitlePaint)
+            canvas1.drawText("NovaPDF Reader & Editor", 40f, 60f, titlePaint)
+            canvas1.drawText("High-Performance Android PDF Workspace", 40f, 85f, subtitlePaint)
 
             val p1Lines = listOf(
-                "Welcome to NovaPDF! This app combines the professional markup tools of Xodo",
-                "with the cutting-edge Text-to-Speech (TTS) reading experience of ReadEra.",
+                "Welcome to NovaPDF! This app brings professional desktop-class PDF tools",
+                "to Android smartphones, tablets, foldables, and Chromebooks.",
                 "",
-                "1. Read Out Loud (ReadEra-Style TTS):",
-                "   • Tap the 'Read Out Loud' icon on the toolbar to begin listening.",
-                "   • Tap directly on any sentence on this page to jump speech to that line instantly.",
-                "   • Notice how the active sentence glows with an amber highlight as it is spoken.",
-                "   • Use the bottom control bar to adjust reading speed from 0.5x up to 3.0x smoothly.",
-                "   • Pick different voices and international accents (US, UK, Indian, Canadian English, etc.).",
-                "   • Playback continues uninterrupted in the background and from your lock screen.",
-                "",
-                "2. Xodo-Grade Stylus & Annotation Suite:",
-                "   • Pen & Stylus: Low-latency ink with palm rejection and Bézier curve smoothing.",
-                "   • Highlighter: Snaps or draws smoothly with Multiply blending mode.",
-                "   • Shapes: Draw Rectangles, Ovals, Arrows, and Lines.",
-                "   • Signatures: Vector signature capture dialog to sign contracts with your finger or S-Pen.",
-                "   • Eraser, Undo, Redo, and Document Tabs for desktop-grade productivity."
+                "Key Capabilities:",
+                "• Read Out Loud (TTS Engine): Tap any sentence to listen in human-like voices.",
+                "  Customize accent, pitch, and speed. Includes background playback and sleep timer.",
+                "• Vector Annotations: Draw with pen, text highlighter, rectangles, ovals, arrows,",
+                "  underlines, strikeouts, sticky notes, and digital signatures with full Undo/Redo.",
+                "• Smooth Fullscreen: Tap anywhere on the page to go completely fullscreen,",
+                "  hiding all status and toolbars. Tap again to bring them back.",
+                "• Smart Persistent Memory: All opened tabs and your exact reading positions",
+                "  are automatically remembered and restored when you reopen the app.",
+                "• Infinite Long Document Support: Optimized for 600+ page books with zero lag",
+                "  and rock-solid memory management."
             )
             var y = 130f
             p1Lines.forEach { line ->
@@ -298,4 +369,3 @@ class MainActivity : ComponentActivity() {
         textExtractor.close()
     }
 }
-

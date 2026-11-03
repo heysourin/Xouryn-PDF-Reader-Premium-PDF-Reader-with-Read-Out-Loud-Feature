@@ -40,6 +40,7 @@ fun DualPageSpreadView(
     onEraseRequested: (pageIndex: Int, x: Float, y: Float) -> Unit,
     onTapToReadRequested: (pageIndex: Int, x: Float, y: Float) -> Unit,
     onSpeakFromSentenceRequested: (pageIndex: Int, sentenceIndex: Int) -> Unit,
+    onPageTapped: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -67,7 +68,8 @@ fun DualPageSpreadView(
                 onAnnotationAdded = onAnnotationAdded,
                 onEraseRequested = { x, y -> onEraseRequested(leftPageIndex, x, y) },
                 onTapToReadRequested = { x, y -> onTapToReadRequested(leftPageIndex, x, y) },
-                onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(leftPageIndex, sIndex) }
+                onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(leftPageIndex, sIndex) },
+                onPageTapped = onPageTapped
             )
         }
 
@@ -100,7 +102,8 @@ fun DualPageSpreadView(
                     onAnnotationAdded = onAnnotationAdded,
                     onEraseRequested = { x, y -> onEraseRequested(rightPageIndex, x, y) },
                     onTapToReadRequested = { x, y -> onTapToReadRequested(rightPageIndex, x, y) },
-                    onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(rightPageIndex, sIndex) }
+                    onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(rightPageIndex, sIndex) },
+                    onPageTapped = onPageTapped
                 )
             }
         } else {

@@ -3,11 +3,18 @@ package com.novapdf.reader.ui.viewer
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +31,8 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.ChromeReaderMode
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MenuBook
@@ -96,6 +105,7 @@ fun PdfViewerScreen(
     document: PdfDocumentModel,
     tabs: List<DocumentTab>,
     activeTabId: String?,
+    initialPageIndex: Int = 0,
     pdfEngine: PdfEngine,
     textExtractor: PdfTextExtractor,
     annotationEngine: AnnotationEngine,
@@ -104,6 +114,8 @@ fun PdfViewerScreen(
     onTabClosed: (DocumentTab) -> Unit,
     onNewTabRequested: () -> Unit,
     onOpenPdfPickerRequested: () -> Unit,
+    onPageChanged: (Int) -> Unit = {},
+    onFullScreenToggled: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -112,7 +124,10 @@ fun PdfViewerScreen(
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
 
     // Reading & Viewer state
-    var currentPageIndex by remember { mutableIntStateOf(0) }
+    var currentPageIndex by remember(document.uri) {
+        mutableIntStateOf(initialPageIndex.coerceIn(0, (document.pageCount - 1).coerceAtLeast(0)))
+    }
+    var isFullScreen by remember { mutableStateOf(false) }
     var isDualPageMode by remember { mutableStateOf(isTablet && isLandscape) }
     var readingTheme by remember { mutableStateOf(ReadingThemeMode.LIGHT) }
     val bookmarks = remember { mutableStateOf(document.bookmarks.toMutableSet()) }
@@ -144,7 +159,22 @@ fun PdfViewerScreen(
     var showVoiceSelectionSheet by remember { mutableStateOf(false) }
     val isTtsBarVisible = ttsPlaybackState != PlaybackState.IDLE || activeTool == ToolType.TTS_READER
 
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = initialPageIndex.coerceIn(0, (document.pageCount - 1).coerceAtLeast(0))
+    )
+
+    // Notify activity of system bar fullscreen changes
+    LaunchedEffect(isFullScreen) {
+        onFullScreenToggled(isFullScreen)
+    }
+
+    // Scroll to initial page if document changed
+    LaunchedEffect(document.uri) {
+        val target = initialPageIndex.coerceIn(0, (document.pageCount - 1).coerceAtLeast(0))
+        if (target > 0) {
+            listState.scrollToItem(target)
+        }
+    }
 
     // Configure on-demand text extraction callback for TTS
     LaunchedEffect(ttsController, document) {
@@ -157,26 +187,13 @@ fun PdfViewerScreen(
                 dim?.height ?: 1100
             )
         }
-
-        // Asynchronously preload text for the current and adjacent page
-        scope.launch(Dispatchers.Default) {
-            val dim = document.pageDimensions.getOrNull(currentPageIndex)
-            val currentText = textExtractor.extractPageText(document.uri, currentPageIndex, dim?.width ?: 800, dim?.height ?: 1100)
-            ttsController.setPageContent(currentPageIndex, currentText)
-
-            val nextIdx = currentPageIndex + 1
-            if (nextIdx < document.pageCount) {
-                val nextDim = document.pageDimensions.getOrNull(nextIdx)
-                val nextText = textExtractor.extractPageText(document.uri, nextIdx, nextDim?.width ?: 800, nextDim?.height ?: 1100)
-                ttsController.setPageContent(nextIdx, nextText)
-            }
-        }
     }
 
     // Connect TTS page change callback to view pager / scroll
     LaunchedEffect(ttsController) {
         ttsController.onPageChangeRequested = { newPage ->
             currentPageIndex = newPage
+            onPageChanged(newPage)
             scope.launch {
                 listState.animateScrollToItem(newPage)
             }
@@ -187,149 +204,172 @@ fun PdfViewerScreen(
     LaunchedEffect(listState) {
         snapshotFlow { listState.firstVisibleItemIndex }.collect { index ->
             currentPageIndex = index
+            onPageChanged(index)
         }
     }
 
     Scaffold(
         topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = document.title,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = "Page ${currentPageIndex + 1} of ${document.pageCount}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    actions = {
-                        // Open PDF Picker
-                        IconButton(onClick = onOpenPdfPickerRequested) {
-                            Icon(imageVector = Icons.Default.FolderOpen, contentDescription = "Open PDF")
-                        }
-
-                        // Tablet Dual Page Spread toggle
-                        if (isTablet) {
-                            IconButton(onClick = { isDualPageMode = !isDualPageMode }) {
-                                Icon(
-                                    imageVector = if (isDualPageMode) Icons.Default.MenuBook else Icons.Default.ChromeReaderMode,
-                                    contentDescription = "Toggle Dual Page Spread",
-                                    tint = if (isDualPageMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            AnimatedVisibility(
+                visible = !isFullScreen,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    text = document.title,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "Page ${currentPageIndex + 1} of ${document.pageCount}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                        }
-
-                        // Bookmark Active Page toggle
-                        IconButton(onClick = {
-                            val currentSet = bookmarks.value.toMutableSet()
-                            if (currentSet.contains(currentPageIndex)) {
-                                currentSet.remove(currentPageIndex)
-                            } else {
-                                currentSet.add(currentPageIndex)
+                        },
+                        actions = {
+                            // Open PDF Picker
+                            IconButton(onClick = onOpenPdfPickerRequested) {
+                                Icon(imageVector = Icons.Default.FolderOpen, contentDescription = "Open PDF")
                             }
-                            bookmarks.value = currentSet
-                        }) {
-                            Icon(
-                                imageVector = if (bookmarks.value.contains(currentPageIndex)) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
-                                contentDescription = "Bookmark",
-                                tint = if (bookmarks.value.contains(currentPageIndex)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
 
-                        // Thumbnails Drawer Trigger
-                        IconButton(onClick = {
-                            activeDrawer = if (activeDrawer == ActiveDrawer.THUMBNAILS) ActiveDrawer.NONE else ActiveDrawer.THUMBNAILS
-                        }) {
-                            Icon(imageVector = Icons.Default.GridView, contentDescription = "Thumbnails")
-                        }
+                            // Tablet Dual Page Spread toggle
+                            if (isTablet) {
+                                IconButton(onClick = { isDualPageMode = !isDualPageMode }) {
+                                    Icon(
+                                        imageVector = if (isDualPageMode) Icons.Default.MenuBook else Icons.Default.ChromeReaderMode,
+                                        contentDescription = "Toggle Dual Page Spread",
+                                        tint = if (isDualPageMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
 
-                        // Table of Contents Trigger
-                        IconButton(onClick = {
-                            activeDrawer = if (activeDrawer == ActiveDrawer.OUTLINE) ActiveDrawer.NONE else ActiveDrawer.OUTLINE
-                        }) {
-                            Icon(imageVector = Icons.Default.Toc, contentDescription = "Outline")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+                            // Fullscreen Toggle
+                            IconButton(onClick = { isFullScreen = !isFullScreen }) {
+                                Icon(
+                                    imageVector = if (isFullScreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = "Toggle Fullscreen"
+                                )
+                            }
+
+                            // Bookmark Active Page toggle
+                            IconButton(onClick = {
+                                val currentSet = bookmarks.value.toMutableSet()
+                                if (currentSet.contains(currentPageIndex)) {
+                                    currentSet.remove(currentPageIndex)
+                                } else {
+                                    currentSet.add(currentPageIndex)
+                                }
+                                bookmarks.value = currentSet
+                            }) {
+                                Icon(
+                                    imageVector = if (bookmarks.value.contains(currentPageIndex)) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                                    contentDescription = "Bookmark",
+                                    tint = if (bookmarks.value.contains(currentPageIndex)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            // Thumbnails Drawer Trigger
+                            IconButton(onClick = {
+                                activeDrawer = if (activeDrawer == ActiveDrawer.THUMBNAILS) ActiveDrawer.NONE else ActiveDrawer.THUMBNAILS
+                            }) {
+                                Icon(imageVector = Icons.Default.GridView, contentDescription = "Thumbnails")
+                            }
+
+                            // Table of Contents Trigger
+                            IconButton(onClick = {
+                                activeDrawer = if (activeDrawer == ActiveDrawer.OUTLINE) ActiveDrawer.NONE else ActiveDrawer.OUTLINE
+                            }) {
+                                Icon(imageVector = Icons.Default.Toc, contentDescription = "Outline")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
                     )
-                )
 
-                // Multi-Document Tab Strip (Xodo style)
-                if (tabs.size > 1) {
-                    DocumentTabBar(
-                        tabs = tabs,
-                        activeTabId = activeTabId,
-                        onTabSelected = onTabSelected,
-                        onTabClosed = onTabClosed,
-                        onNewTabRequested = onNewTabRequested
+                    // Multi-Document Tab Strip (Xodo style)
+                    if (tabs.size > 1) {
+                        DocumentTabBar(
+                            tabs = tabs,
+                            activeTabId = activeTabId,
+                            onTabSelected = onTabSelected,
+                            onTabClosed = onTabClosed,
+                            onNewTabRequested = onNewTabRequested
+                        )
+                    }
+
+                    // Stylus & Annotation Tool Bar (Xodo style)
+                    StylusToolbar(
+                        activeTool = activeTool,
+                        currentColor = currentColor,
+                        canUndo = canUndo,
+                        canRedo = canRedo,
+                        onToolSelected = { selected ->
+                            activeTool = selected
+                            if (selected == ToolType.TTS_READER) {
+                                ttsController.play(currentPageIndex)
+                            }
+                        },
+                        onColorPickerRequested = { showStylePicker = true },
+                        onSignatureRequested = { showSignatureDialog = true },
+                        onUndoClicked = { annotationEngine.undo() },
+                        onRedoClicked = { annotationEngine.redo() },
+                        onClearAllClicked = { annotationEngine.clearAll() }
                     )
                 }
-
-                // Stylus & Annotation Tool Bar (Xodo style)
-                StylusToolbar(
-                    activeTool = activeTool,
-                    currentColor = currentColor,
-                    canUndo = canUndo,
-                    canRedo = canRedo,
-                    onToolSelected = { selected ->
-                        activeTool = selected
-                        if (selected == ToolType.TTS_READER) {
-                            ttsController.play(currentPageIndex)
-                        }
-                    },
-                    onColorPickerRequested = { showStylePicker = true },
-                    onSignatureRequested = { showSignatureDialog = true },
-                    onUndoClicked = { annotationEngine.undo() },
-                    onRedoClicked = { annotationEngine.redo() },
-                    onClearAllClicked = { annotationEngine.clearAll() }
-                )
             }
         },
         bottomBar = {
-            // ReadEra-style TTS Control Bar
-            TtsBottomBar(
-                isVisible = isTtsBarVisible,
-                playbackState = ttsPlaybackState,
-                speechPosition = ttsPosition,
-                speechRate = ttsSettings.speechRate,
-                selectedVoiceDisplayName = ttsSettings.selectedVoiceName,
-                sleepTimerSeconds = ttsSettings.sleepTimerRemainingSeconds,
-                onPlayPauseClicked = { ttsController.togglePlayPause() },
-                onSkipPreviousClicked = { ttsController.skipPrevious() },
-                onSkipNextClicked = { ttsController.skipNext() },
-                onSpeedPillClicked = {
-                    val nextSpeed = when {
-                        ttsSettings.speechRate < 0.95f -> 1.0f
-                        ttsSettings.speechRate < 1.2f -> 1.25f
-                        ttsSettings.speechRate < 1.45f -> 1.5f
-                        ttsSettings.speechRate < 1.9f -> 2.0f
-                        else -> 0.75f
+            // ReadEra-style TTS Control Bar with smooth slide animation
+            AnimatedVisibility(
+                visible = !isFullScreen && isTtsBarVisible,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+            ) {
+                TtsBottomBar(
+                    isVisible = isTtsBarVisible,
+                    playbackState = ttsPlaybackState,
+                    speechPosition = ttsPosition,
+                    speechRate = ttsSettings.speechRate,
+                    selectedVoiceDisplayName = ttsSettings.selectedVoiceName,
+                    sleepTimerSeconds = ttsSettings.sleepTimerRemainingSeconds,
+                    onPlayPauseClicked = { ttsController.togglePlayPause() },
+                    onSkipPreviousClicked = { ttsController.skipPrevious() },
+                    onSkipNextClicked = { ttsController.skipNext() },
+                    onSpeedPillClicked = {
+                        val nextSpeed = when {
+                            ttsSettings.speechRate < 0.95f -> 1.0f
+                            ttsSettings.speechRate < 1.2f -> 1.25f
+                            ttsSettings.speechRate < 1.45f -> 1.5f
+                            ttsSettings.speechRate < 1.9f -> 2.0f
+                            else -> 0.75f
+                        }
+                        ttsController.setSpeechRate(nextSpeed)
+                    },
+                    onVoicePickerClicked = { showVoiceSelectionSheet = true },
+                    onSettingsClicked = { showTtsSettingsDialog = true },
+                    onCloseClicked = {
+                        ttsController.stop()
+                        if (activeTool == ToolType.TTS_READER) {
+                            activeTool = ToolType.PAN
+                        }
                     }
-                    ttsController.setSpeechRate(nextSpeed)
-                },
-                onVoicePickerClicked = { showVoiceSelectionSheet = true },
-                onSettingsClicked = { showTtsSettingsDialog = true },
-                onCloseClicked = {
-                    ttsController.stop()
-                    if (activeTool == ToolType.TTS_READER) {
-                        activeTool = ToolType.PAN
-                    }
-                }
-            )
+                )
+            }
         }
     ) { innerPadding ->
+        val contentPadding = if (isFullScreen) PaddingValues(0.dp) else innerPadding
+
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(contentPadding)
                 .background(
                     when (readingTheme) {
                         ReadingThemeMode.LIGHT -> Color(0xFFF0F2F5)
@@ -365,7 +405,8 @@ fun PdfViewerScreen(
                     onAnnotationAdded = { annot -> annotationEngine.addAnnotation(annot) },
                     onEraseRequested = { p, x, y -> annotationEngine.eraseAt(p, x, y) },
                     onTapToReadRequested = { p, x, y -> ttsController.tapToRead(p, x, y) },
-                    onSpeakFromSentenceRequested = { p, s -> ttsController.play(p, s) }
+                    onSpeakFromSentenceRequested = { p, s -> ttsController.play(p, s) },
+                    onPageTapped = { isFullScreen = !isFullScreen }
                 )
             } else {
                 // Continuous Vertical Scroll (Handheld & Portrait Tablet Mode)
@@ -373,7 +414,7 @@ fun PdfViewerScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                        contentPadding = PaddingValues(horizontal = if (isFullScreen) 0.dp else 16.dp, vertical = if (isFullScreen) 0.dp else 12.dp)
                     ) {
                         items(document.pageCount) { pageIndex ->
                             val dim = document.pageDimensions.getOrNull(pageIndex)
@@ -397,7 +438,8 @@ fun PdfViewerScreen(
                                 onEraseRequested = { x, y -> annotationEngine.eraseAt(pageIndex, x, y) },
                                 onTapToReadRequested = { x, y -> ttsController.tapToRead(pageIndex, x, y) },
                                 onSpeakFromSentenceRequested = { sIndex -> ttsController.play(pageIndex, sIndex) },
-                                modifier = Modifier.padding(bottom = 16.dp)
+                                onPageTapped = { isFullScreen = !isFullScreen },
+                                modifier = Modifier.padding(bottom = if (isFullScreen) 6.dp else 16.dp)
                             )
                         }
                     }
@@ -420,6 +462,7 @@ fun PdfViewerScreen(
                             getThumbnailBitmap = { p -> pdfEngine.getCachedPage(p) },
                             onPageSelected = { selected ->
                                 currentPageIndex = selected
+                                onPageChanged(selected)
                                 activeDrawer = ActiveDrawer.NONE
                                 scope.launch { listState.scrollToItem(selected) }
                             },
@@ -431,6 +474,7 @@ fun PdfViewerScreen(
                             outlines = document.outlines,
                             onPageSelected = { selected ->
                                 currentPageIndex = selected
+                                onPageChanged(selected)
                                 activeDrawer = ActiveDrawer.NONE
                                 scope.launch { listState.scrollToItem(selected) }
                             },
@@ -443,6 +487,7 @@ fun PdfViewerScreen(
                             currentPageIndex = currentPageIndex,
                             onPageSelected = { selected ->
                                 currentPageIndex = selected
+                                onPageChanged(selected)
                                 activeDrawer = ActiveDrawer.NONE
                                 scope.launch { listState.scrollToItem(selected) }
                             },
