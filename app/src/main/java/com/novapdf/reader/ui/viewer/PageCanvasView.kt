@@ -99,7 +99,9 @@ fun PageCanvasView(
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val configuration = LocalConfiguration.current
-    val screenWidthPx = (configuration.screenWidthDp * configuration.fontScale * 2.2f).toInt().coerceIn(720, 1080)
+
+    // Optimized memory budget: render at crisp display width without wasting RAM
+    val screenWidthPx = (configuration.screenWidthDp * 1.8f).toInt().coerceIn(600, 900)
     val aspectRatio = dimension?.aspectRatio ?: (1f / 1.414f)
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
@@ -111,7 +113,7 @@ fun PageCanvasView(
         }
     }
 
-    // 2. On-Demand Text Content: NEVER eagerly extracts on scroll to avoid OOM on 600+ page PDFs!
+    // 2. On-Demand Text Content: NEVER eagerly extracts on scroll to keep CPU cool and RAM light!
     var textContent by remember(pageIndex) {
         mutableStateOf(textExtractor.getCachedPageText(pageIndex))
     }
@@ -153,18 +155,6 @@ fun PageCanvasView(
         selectedEndIndex = -1
     }
 
-    // ReadEra TTS pulse animation
-    val infiniteTransition = rememberInfiniteTransition(label = "tts_pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 0.65f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
-
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -197,37 +187,9 @@ fun PageCanvasView(
             }
 
             // 2. ReadEra-Style Live TTS Speech Glowing Overlay
+            // Isolated in dedicated composable so it NEVER triggers 120Hz recomposition loops on idle pages!
             if (speechPosition != null && speechPosition.pageIndex == pageIndex) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val pageWidth = size.width
-                    val pageHeight = size.height
-
-                    val lineBounds = speechPosition.activeLineBounds.ifEmpty {
-                        speechPosition.currentSentence?.bounds?.let { listOf(it) } ?: emptyList()
-                    }
-
-                    lineBounds.forEach { normRect ->
-                        val left = normRect.left * pageWidth
-                        val top = normRect.top * pageHeight
-                        val width = normRect.width * pageWidth
-                        val height = normRect.height * pageHeight
-
-                        drawRoundRect(
-                            color = Color(0xFFFFEB3B).copy(alpha = pulseAlpha),
-                            topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
-                            size = Size(width + 4.dp.toPx(), height + 4.dp.toPx()),
-                            cornerRadius = CornerRadius(4.dp.toPx())
-                        )
-
-                        drawRoundRect(
-                            color = Color(0xFFF57F17).copy(alpha = 0.8f),
-                            topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
-                            size = Size(width + 4.dp.toPx(), height + 4.dp.toPx()),
-                            cornerRadius = CornerRadius(4.dp.toPx()),
-                            style = Stroke(width = 1.5.dp.toPx())
-                        )
-                    }
-                }
+                TtsSpeechHighlightLayer(speechPosition = speechPosition)
             }
 
             // 3. Vector Annotation Drawing Layer
@@ -308,10 +270,8 @@ fun PageCanvasView(
                                 },
                                 onTap = {
                                     if (selectedStartIndex != -1) {
-                                        // Dismiss selection first if text was selected
                                         clearSelection()
                                     } else {
-                                        // Xodo-style single tap toggles immersive fullscreen!
                                         onPageTapped()
                                     }
                                 }
@@ -403,8 +363,6 @@ fun PageCanvasView(
                     val menuY = if (spaceAbove >= with(density) { 16.dp.toPx() }) {
                         spaceAbove
                     } else {
-                        // Near the top edge of page: place comfortably BELOW the last selected word
-                        // Leave 34dp room for the teardrop pin handle
                         endWordBottomPx + with(density) { 34.dp.toPx() }
                     }
 
@@ -506,6 +464,57 @@ fun PageCanvasView(
 }
 
 /**
+ * Isolated TTS Speech Highlight layer.
+ * Only runs the animation when actively speaking on this specific page, saving massive CPU and battery!
+ */
+@Composable
+private fun TtsSpeechHighlightLayer(
+    speechPosition: SpeechPosition
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "tts_pulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.65f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val pageWidth = size.width
+        val pageHeight = size.height
+
+        val lineBounds = speechPosition.activeLineBounds.ifEmpty {
+            speechPosition.currentSentence?.bounds?.let { listOf(it) } ?: emptyList()
+        }
+
+        lineBounds.forEach { normRect ->
+            val left = normRect.left * pageWidth
+            val top = normRect.top * pageHeight
+            val width = normRect.width * pageWidth
+            val height = normRect.height * pageHeight
+
+            drawRoundRect(
+                color = Color(0xFFFFEB3B).copy(alpha = pulseAlpha),
+                topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
+                size = Size(width + 4.dp.toPx(), height + 4.dp.toPx()),
+                cornerRadius = CornerRadius(4.dp.toPx())
+            )
+
+            drawRoundRect(
+                color = Color(0xFFF57F17).copy(alpha = 0.8f),
+                topLeft = Offset(left - 2.dp.toPx(), top - 2.dp.toPx()),
+                size = Size(width + 4.dp.toPx(), height + 4.dp.toPx()),
+                cornerRadius = CornerRadius(4.dp.toPx()),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+        }
+    }
+}
+
+/**
  * Draggable selection teardrop pin handle
  */
 @Composable
@@ -595,7 +604,7 @@ private fun findWordIndexAt(words: List<PdfWord>, normX: Float, normY: Float): I
         val midX = (word.bounds.left + word.bounds.right) / 2f
         val midY = (word.bounds.top + word.bounds.bottom) / 2f
         val dx = midX - normX
-        val dy = (midY - normY) * 2f // Penalize vertical distance more
+        val dy = (midY - normY) * 2f
         dx * dx + dy * dy
     } ?: -1
 }

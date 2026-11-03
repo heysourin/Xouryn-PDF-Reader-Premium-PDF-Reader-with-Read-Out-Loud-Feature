@@ -7,6 +7,8 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.novapdf.reader.model.DocumentTab
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -32,17 +34,29 @@ class DocumentStorageManager(private val context: Context) {
     }
 
     /**
-     * Copies external URI to persistent local app storage so documents are always available
-     * across app restarts, reboots, and storage permission changes.
+     * Efficiently makes document persistent without redundant copying.
+     * Always executes file I/O safely on background dispatcher.
      */
-    fun makeDocumentPersistent(tabId: String, sourceUri: Uri): Uri {
-        return try {
+    suspend fun makeDocumentPersistent(tabId: String, sourceUri: Uri): Uri = withContext(Dispatchers.IO) {
+        try {
+            // 1. If it's already a local file that exists, reuse it immediately (0ms)
+            if (sourceUri.scheme == "file") {
+                val existing = File(sourceUri.path ?: "")
+                if (existing.exists() && existing.length() > 0L) {
+                    return@withContext sourceUri
+                }
+            }
+
+            // 2. If it was already persisted for this tab, reuse it immediately (0ms)
             val destFile = File(storageDir, "doc_${tabId}.pdf")
-            if (!destFile.exists() || destFile.length() == 0L) {
-                context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                    FileOutputStream(destFile).use { output ->
-                        input.copyTo(output)
-                    }
+            if (destFile.exists() && destFile.length() > 0L) {
+                return@withContext Uri.fromFile(destFile)
+            }
+
+            // 3. Otherwise copy stream to persistent storage
+            context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output, bufferSize = 64 * 1024)
                 }
             }
             if (destFile.exists() && destFile.length() > 0L) {
@@ -155,4 +169,3 @@ class DocumentStorageManager(private val context: Context) {
         }
     }
 }
-

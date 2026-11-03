@@ -30,8 +30,8 @@ class PdfTextExtractor(private val context: Context) {
     private var activeDocument: PDDocument? = null
     private var cachedPdfFile: File? = null
 
-    // LRU Cache for extracted page text (holds up to 60 pages in memory)
-    private val pageTextCache = LruCache<Int, PageTextContent>(60)
+    // Lean LRU Cache for extracted page text (holds up to 30 pages in memory)
+    private val pageTextCache = LruCache<Int, PageTextContent>(30)
 
     suspend fun extractPageText(
         uri: Uri,

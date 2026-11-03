@@ -143,7 +143,7 @@ class MainActivity : ComponentActivity() {
                             activeTabId.value?.let { currentId ->
                                 documentStorageManager.savePagePosition(currentId, pageIndex)
                                 val idx = documentTabs.indexOfFirst { it.id == currentId }
-                                if (idx != -1) {
+                                if (idx != -1 && documentTabs[idx].currentPageIndex != pageIndex) {
                                     documentTabs[idx] = documentTabs[idx].copy(currentPageIndex = pageIndex)
                                 }
                             }
