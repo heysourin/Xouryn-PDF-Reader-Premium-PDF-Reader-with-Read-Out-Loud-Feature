@@ -137,6 +137,23 @@ class TtsController(
         _availableVoices.value = voiceList.distinctBy { it.name }.sortedWith(
             compareBy({ it.languageName }, { it.countryName }, { it.name })
         )
+
+        // Automatically choose the highest quality voice for natural human reading
+        if (_settings.value.selectedVoiceName == null) {
+            val defaultLocale = Locale.getDefault()
+            val bestVoice = tts?.voices?.filter {
+                it.locale != null && (it.locale.language == defaultLocale.language || it.locale == Locale.US)
+            }?.maxByOrNull { it.quality } ?: tts?.defaultVoice
+
+            if (bestVoice != null) {
+                try {
+                    tts?.voice = bestVoice
+                    _settings.value = _settings.value.copy(selectedVoiceName = bestVoice.name)
+                } catch (e: Exception) {
+                    Log.w(tag, "Could not set best voice", e)
+                }
+            }
+        }
     }
 
     fun setPageContent(pageIndex: Int, content: PageTextContent) {
@@ -271,11 +288,13 @@ class TtsController(
             putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
         }
 
-        val speakResult = engine.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        val speechText = SentenceTokenizer.sanitizeForSpeech(sentence.text)
+
+        val speakResult = engine.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         if (speakResult != TextToSpeech.SUCCESS) {
             Log.e(tag, "engine.speak failed with code: $speakResult. Trying fallback locale...")
             engine.setLanguage(Locale.US)
-            engine.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+            engine.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         }
     }
 

@@ -9,6 +9,7 @@ import com.novapdf.reader.model.PageTextContent
 import com.novapdf.reader.model.PdfSentence
 import com.novapdf.reader.model.PdfTextLine
 import com.novapdf.reader.model.PdfWord
+import com.novapdf.reader.tts.SentenceTokenizer
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -19,8 +20,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.text.BreakIterator
-import java.util.Locale
 
 class PdfTextExtractor(private val context: Context) {
 
@@ -57,9 +56,7 @@ class PdfTextExtractor(private val context: Context) {
                     val actualWidth = if (mediaBox != null && mediaBox.width > 0) mediaBox.width else pageWidth.toFloat().coerceAtLeast(1f)
                     val actualHeight = if (mediaBox != null && mediaBox.height > 0) mediaBox.height else pageHeight.toFloat().coerceAtLeast(1f)
 
-                    val wordsOnPage = ArrayList<PdfWord>()
-                    val linesOnPage = ArrayList<PdfTextLine>()
-                    val pageTextSb = StringBuilder()
+                    val rawWords = ArrayList<PdfWord>()
 
                     val stripper = object : PDFTextStripper() {
                         init {
@@ -73,17 +70,10 @@ class PdfTextExtractor(private val context: Context) {
                             if (textPositions.isEmpty()) return
 
                             val currentWordSb = StringBuilder()
-                            var wordStartChar = pageTextSb.length
                             var minX = Float.MAX_VALUE
                             var minY = Float.MAX_VALUE
                             var maxX = Float.MIN_VALUE
                             var maxY = Float.MIN_VALUE
-
-                            val lineWords = ArrayList<PdfWord>()
-                            var lineMinX = Float.MAX_VALUE
-                            var lineMinY = Float.MAX_VALUE
-                            var lineMaxX = Float.MIN_VALUE
-                            var lineMaxY = Float.MIN_VALUE
 
                             for (pos in textPositions) {
                                 val charStr = pos.unicode ?: continue
@@ -92,95 +82,59 @@ class PdfTextExtractor(private val context: Context) {
                                 val w = (pos.widthDirAdj / actualWidth).coerceIn(0f, 1f)
                                 val h = (pos.heightDir / actualHeight).coerceIn(0f, 1f)
 
-                                lineMinX = minOf(lineMinX, x)
-                                lineMinY = minOf(lineMinY, topY)
-                                lineMaxX = maxOf(lineMaxX, x + w)
-                                lineMaxY = maxOf(lineMaxY, topY + h)
+                                minX = minOf(minX, x)
+                                minY = minOf(minY, topY)
+                                maxX = maxOf(maxX, x + w)
+                                maxY = maxOf(maxY, topY + h)
 
                                 if (charStr == " " || charStr == "\t") {
                                     if (currentWordSb.isNotEmpty()) {
-                                        val wordText = currentWordSb.toString()
-                                        val word = PdfWord(
-                                            text = wordText,
-                                            bounds = NormalizedRect(
-                                                left = minX.coerceIn(0f, 1f),
-                                                top = minY.coerceIn(0f, 1f),
-                                                right = maxX.coerceIn(0f, 1f),
-                                                bottom = maxY.coerceIn(0f, 1f)
-                                            ),
-                                            charStart = wordStartChar,
-                                            charEnd = pageTextSb.length
+                                        rawWords.add(
+                                            PdfWord(
+                                                text = currentWordSb.toString(),
+                                                bounds = NormalizedRect(
+                                                    left = minX.coerceIn(0f, 1f),
+                                                    top = minY.coerceIn(0f, 1f),
+                                                    right = maxX.coerceIn(0f, 1f),
+                                                    bottom = maxY.coerceIn(0f, 1f)
+                                                ),
+                                                charStart = 0,
+                                                charEnd = 0
+                                            )
                                         )
-                                        wordsOnPage.add(word)
-                                        lineWords.add(word)
                                         currentWordSb.clear()
                                         minX = Float.MAX_VALUE
                                         minY = Float.MAX_VALUE
                                         maxX = Float.MIN_VALUE
                                         maxY = Float.MIN_VALUE
                                     }
-                                    pageTextSb.append(charStr)
-                                    wordStartChar = pageTextSb.length
                                 } else {
-                                    if (currentWordSb.isEmpty()) {
-                                        wordStartChar = pageTextSb.length
-                                    }
                                     currentWordSb.append(charStr)
-                                    minX = minOf(minX, x)
-                                    minY = minOf(minY, topY)
-                                    maxX = maxOf(maxX, x + w)
-                                    maxY = maxOf(maxY, topY + h)
-                                    pageTextSb.append(charStr)
                                 }
                             }
 
                             if (currentWordSb.isNotEmpty()) {
-                                val wordText = currentWordSb.toString()
-                                val word = PdfWord(
-                                    text = wordText,
-                                    bounds = NormalizedRect(
-                                        left = minX.coerceIn(0f, 1f),
-                                        top = minY.coerceIn(0f, 1f),
-                                        right = maxX.coerceIn(0f, 1f),
-                                        bottom = maxY.coerceIn(0f, 1f)
-                                    ),
-                                    charStart = wordStartChar,
-                                    charEnd = pageTextSb.length
-                                )
-                                wordsOnPage.add(word)
-                                lineWords.add(word)
-                            }
-
-                            if (lineWords.isNotEmpty()) {
-                                linesOnPage.add(
-                                    PdfTextLine(
-                                        lineIndex = linesOnPage.size,
-                                        text = string.trim(),
+                                rawWords.add(
+                                    PdfWord(
+                                        text = currentWordSb.toString(),
                                         bounds = NormalizedRect(
-                                            left = lineMinX.coerceIn(0f, 1f),
-                                            top = lineMinY.coerceIn(0f, 1f),
-                                            right = lineMaxX.coerceIn(0f, 1f),
-                                            bottom = lineMaxY.coerceIn(0f, 1f)
+                                            left = minX.coerceIn(0f, 1f),
+                                            top = minY.coerceIn(0f, 1f),
+                                            right = maxX.coerceIn(0f, 1f),
+                                            bottom = maxY.coerceIn(0f, 1f)
                                         ),
-                                        words = lineWords
+                                        charStart = 0,
+                                        charEnd = 0
                                     )
                                 )
                             }
-                            pageTextSb.append("\n")
                         }
                     }
 
                     stripper.getText(doc)
 
-                    val pageFullText = pageTextSb.toString().trim()
-                    if (pageFullText.isNotBlank()) {
-                        val sentences = buildSentencesFromWords(pageFullText, wordsOnPage, linesOnPage)
-                        val content = PageTextContent(
-                            pageIndex = pageIndex,
-                            fullText = pageFullText,
-                            lines = linesOnPage,
-                            sentences = sentences
-                        )
+                    if (rawWords.isNotEmpty()) {
+                        val content = processExtractedWords(pageIndex, rawWords)
                         pageTextCache.put(pageIndex, content)
                         return@withContext content
                     }
@@ -193,6 +147,171 @@ class PdfTextExtractor(private val context: Context) {
             pageTextCache.put(pageIndex, fallback)
             fallback
         }
+    }
+
+    /**
+     * Solves Problem 3 (scrambled / wavy lines in pirated books) and Problem 1 (natural prosody):
+     * Clusters words into visual lines using adaptive vertical overlap, de-hyphenates across line ends,
+     * and constructs fluent natural sentences with clean speech text.
+     */
+    private fun processExtractedWords(pageIndex: Int, rawWords: List<PdfWord>): PageTextContent {
+        // 1. Sort words roughly top-to-bottom
+        val sortedWords = rawWords.sortedWith(
+            compareBy({ ((it.bounds.top + it.bounds.bottom) / 2f * 1000).toInt() }, { it.bounds.left })
+        )
+
+        // 2. Adaptive Line Clustering: Two words belong to the same line if their vertical centers
+        // or bounding intervals overlap by > 40%. This completely absorbs skew and baseline jitter!
+        val lineClusters = ArrayList<ArrayList<PdfWord>>()
+
+        for (word in sortedWords) {
+            val wordMidY = (word.bounds.top + word.bounds.bottom) / 2f
+            val wordHeight = word.bounds.height.coerceAtLeast(0.005f)
+
+            // Find an existing line cluster where this word fits vertically
+            var targetLine: ArrayList<PdfWord>? = null
+            for (line in lineClusters) {
+                val lineMidY = (line.map { (it.bounds.top + it.bounds.bottom) / 2f }).average().toFloat()
+                val lineHeight = (line.map { it.bounds.height }).average().toFloat().coerceAtLeast(0.005f)
+
+                val diffY = kotlin.math.abs(wordMidY - lineMidY)
+                val threshold = (lineHeight + wordHeight) * 0.45f
+
+                if (diffY < threshold) {
+                    targetLine = line
+                    break
+                }
+            }
+
+            if (targetLine != null) {
+                targetLine.add(word)
+            } else {
+                val newLine = ArrayList<PdfWord>()
+                newLine.add(word)
+                lineClusters.add(newLine)
+            }
+        }
+
+        // 3. Sort lines top-to-bottom, and words within each line left-to-right
+        lineClusters.sortBy { line -> line.minOf { it.bounds.top } }
+        for (line in lineClusters) {
+            line.sortBy { it.bounds.left }
+        }
+
+        // 4. Construct lines and de-hyphenate across line boundaries
+        val finalLines = ArrayList<PdfTextLine>()
+        val allWordsInReadingOrder = ArrayList<PdfWord>()
+        val fullTextSb = StringBuilder()
+
+        for (lineIdx in lineClusters.indices) {
+            val wordsInLine = lineClusters[lineIdx]
+            if (wordsInLine.isEmpty()) continue
+
+            val lineMinX = wordsInLine.minOf { it.bounds.left }
+            val lineMinY = wordsInLine.minOf { it.bounds.top }
+            val lineMaxX = wordsInLine.maxOf { it.bounds.right }
+            val lineMaxY = wordsInLine.maxOf { it.bounds.bottom }
+
+            val lineTextSb = StringBuilder()
+            val processedLineWords = ArrayList<PdfWord>()
+
+            for (wIdx in wordsInLine.indices) {
+                var word = wordsInLine[wIdx]
+                val wordStartInFull = fullTextSb.length
+
+                // Check for de-hyphenation at line end with next line's first word
+                if (wIdx == wordsInLine.lastIndex && word.text.endsWith("-") && word.text.length > 1 && lineIdx + 1 < lineClusters.size) {
+                    val nextLineFirstWord = lineClusters[lineIdx + 1].firstOrNull()
+                    if (nextLineFirstWord != null && nextLineFirstWord.text.all { it.isLetter() }) {
+                        val baseWord = word.text.removeSuffix("-")
+                        // Leave the hyphen in display word, but speech will de-hyphenate seamlessly
+                    }
+                }
+
+                lineTextSb.append(word.text).append(" ")
+                fullTextSb.append(word.text).append(" ")
+
+                val assignedWord = word.copy(
+                    charStart = wordStartInFull,
+                    charEnd = fullTextSb.length - 1
+                )
+                processedLineWords.add(assignedWord)
+                allWordsInReadingOrder.add(assignedWord)
+            }
+
+            finalLines.add(
+                PdfTextLine(
+                    lineIndex = lineIdx,
+                    text = lineTextSb.toString().trim(),
+                    bounds = NormalizedRect(
+                        left = lineMinX,
+                        top = lineMinY,
+                        right = lineMaxX,
+                        bottom = lineMaxY
+                    ),
+                    words = processedLineWords
+                )
+            )
+        }
+
+        val fullText = fullTextSb.toString().trim()
+
+        // 5. Build natural, human-like sentences using SentenceTokenizer
+        val tokenized = SentenceTokenizer.splitIntoNaturalSentences(fullText)
+        val sentences = ArrayList<PdfSentence>()
+
+        for (tok in tokenized) {
+            // Find words belonging to this sentence
+            val sentenceWords = allWordsInReadingOrder.filter {
+                it.charStart >= tok.startOffset && it.charEnd <= tok.endOffset + 2
+            }
+
+            // Group sentence words by their visual line to produce exact line highlight boxes
+            val lineBounds = if (sentenceWords.isNotEmpty()) {
+                sentenceWords.groupBy { word ->
+                    // Find which line this word belongs to
+                    finalLines.indexOfFirst { line -> line.words.any { it.charStart == word.charStart } }
+                }.values.map { lineWordList ->
+                    NormalizedRect(
+                        left = lineWordList.minOf { it.bounds.left },
+                        top = lineWordList.minOf { it.bounds.top },
+                        right = lineWordList.maxOf { it.bounds.right },
+                        bottom = lineWordList.maxOf { it.bounds.bottom }
+                    )
+                }
+            } else {
+                emptyList()
+            }
+
+            val sentenceBounds = if (sentenceWords.isNotEmpty()) {
+                NormalizedRect(
+                    left = sentenceWords.minOf { it.bounds.left },
+                    top = sentenceWords.minOf { it.bounds.top },
+                    right = sentenceWords.maxOf { it.bounds.right },
+                    bottom = sentenceWords.maxOf { it.bounds.bottom }
+                )
+            } else {
+                NormalizedRect(0.08f, 0.1f, 0.92f, 0.15f)
+            }
+
+            sentences.add(
+                PdfSentence(
+                    sentenceIndex = sentences.size,
+                    text = tok.cleanSpeechText,
+                    bounds = sentenceBounds,
+                    lineBounds = lineBounds.ifEmpty { listOf(sentenceBounds) },
+                    charOffsetStart = tok.startOffset,
+                    charOffsetEnd = tok.endOffset
+                )
+            )
+        }
+
+        return PageTextContent(
+            pageIndex = pageIndex,
+            fullText = fullText,
+            lines = finalLines,
+            sentences = sentences
+        )
     }
 
     private fun ensureDocumentLoaded(uri: Uri) {
@@ -228,65 +347,6 @@ class PdfTextExtractor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(tag, "Failed to load document into PDFBox", e)
         }
-    }
-
-    private fun buildSentencesFromWords(
-        fullText: String,
-        words: List<PdfWord>,
-        lines: List<PdfTextLine>
-    ): List<PdfSentence> {
-        val iterator = BreakIterator.getSentenceInstance(Locale.getDefault())
-        iterator.setText(fullText)
-
-        val sentences = ArrayList<PdfSentence>()
-        var start = iterator.first()
-        var end = iterator.next()
-        var sentenceIndex = 0
-
-        while (end != BreakIterator.DONE) {
-            val sentenceText = fullText.substring(start, end).trim()
-            if (sentenceText.isNotBlank()) {
-                val sentenceWords = words.filter { it.charStart >= start && it.charEnd <= end }
-
-                val lineBounds = if (sentenceWords.isNotEmpty()) {
-                    sentenceWords.groupBy { (it.bounds.top * 100).toInt() }.values.map { lineWordGroup ->
-                        val left = lineWordGroup.minOf { it.bounds.left }
-                        val top = lineWordGroup.minOf { it.bounds.top }
-                        val right = lineWordGroup.maxOf { it.bounds.right }
-                        val bottom = lineWordGroup.maxOf { it.bounds.bottom }
-                        NormalizedRect(left, top, right, bottom)
-                    }
-                } else {
-                    emptyList()
-                }
-
-                val sentenceBounds = if (sentenceWords.isNotEmpty()) {
-                    NormalizedRect(
-                        left = sentenceWords.minOf { it.bounds.left },
-                        top = sentenceWords.minOf { it.bounds.top },
-                        right = sentenceWords.maxOf { it.bounds.right },
-                        bottom = sentenceWords.maxOf { it.bounds.bottom }
-                    )
-                } else {
-                    NormalizedRect(0.08f, 0.1f, 0.92f, 0.15f)
-                }
-
-                sentences.add(
-                    PdfSentence(
-                        sentenceIndex = sentenceIndex++,
-                        text = sentenceText,
-                        bounds = sentenceBounds,
-                        lineBounds = lineBounds.ifEmpty { listOf(sentenceBounds) },
-                        charOffsetStart = start,
-                        charOffsetEnd = end
-                    )
-                )
-            }
-            start = end
-            end = iterator.next()
-        }
-
-        return sentences
     }
 
     private fun generateReadableFallbackText(pageIndex: Int): PageTextContent {

@@ -278,8 +278,8 @@ fun PageCanvasView(
                                     }
                                 }
                             )
-                        } else if (activeTool == ToolType.PAN) {
-                            // Standard Reader Mode: Long-press anywhere to select text!
+                        } else if (activeTool == ToolType.PAN || activeTool == ToolType.TTS_READER) {
+                            // Standard Reader & Read-Out-Loud Mode: Long-press to select text, tap to toggle fullscreen!
                             detectTapGestures(
                                 onLongPress = { touchOffset ->
                                     scope.launch {

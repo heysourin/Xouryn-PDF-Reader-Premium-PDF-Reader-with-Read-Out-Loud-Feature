@@ -11,7 +11,10 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,12 +27,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.ChromeReaderMode
+import androidx.compose.material.icons.filled.FindInPage
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -43,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -59,12 +65,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.novapdf.reader.engine.AnnotationEngine
 import com.novapdf.reader.engine.PdfEngine
 import com.novapdf.reader.engine.PdfTextExtractor
@@ -131,6 +140,9 @@ fun PdfViewerScreen(
     var isDualPageMode by remember { mutableStateOf(isTablet && isLandscape) }
     var readingTheme by remember { mutableStateOf(ReadingThemeMode.LIGHT) }
     val bookmarks = remember { mutableStateOf(document.bookmarks.toMutableSet()) }
+
+    // Go to Page Dialog state
+    var showGoToPageDialog by remember { mutableStateOf(false) }
 
     // Active Drawer State
     var activeDrawer by remember { mutableStateOf(ActiveDrawer.NONE) }
@@ -326,7 +338,7 @@ fun PdfViewerScreen(
             }
         },
         bottomBar = {
-            // ReadEra-style TTS Control Bar with smooth slide animation
+            // ReadEra-style TTS Control Bar with smooth slide animation (hidden in fullscreen)
             AnimatedVisibility(
                 visible = !isFullScreen && isTtsBarVisible,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -444,6 +456,68 @@ fun PdfViewerScreen(
                         }
                     }
                 }
+            }
+
+            // 1. Top-Left Floating Page Number Capsule (Xodo Style: e.g. "268 / 670")
+            // Tap to open "Go to Page" jump dialog!
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 16.dp, top = if (isFullScreen) 16.dp else 10.dp)
+                    .shadow(6.dp, RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { showGoToPageDialog = true },
+                color = Color(0xDD1E1E1E),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FindInPage,
+                        contentDescription = "Go to Page",
+                        tint = Color(0xFF64B5F6),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "${currentPageIndex + 1} / ${document.pageCount}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            letterSpacing = 0.5.sp
+                        ),
+                        color = Color.White
+                    )
+                }
+            }
+
+            // 2. Right Vertical Fast-Scroll Slider Tag (Xodo Style ::: Handle)
+            VerticalFastScroller(
+                currentPage = currentPageIndex,
+                pageCount = document.pageCount,
+                onScrolledToPage = { targetPage ->
+                    currentPageIndex = targetPage
+                    onPageChanged(targetPage)
+                    scope.launch { listState.scrollToItem(targetPage) }
+                },
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
+
+            // 3. "Go to Page" Jump Dialog
+            if (showGoToPageDialog) {
+                GoToPageDialog(
+                    currentPage = currentPageIndex,
+                    pageCount = document.pageCount,
+                    onPageSelected = { targetPage ->
+                        currentPageIndex = targetPage
+                        onPageChanged(targetPage)
+                        scope.launch { listState.scrollToItem(targetPage) }
+                    },
+                    onDismissRequest = { showGoToPageDialog = false }
+                )
             }
 
             // Navigation Drawers (Side Overlays)
