@@ -1,12 +1,14 @@
 package com.novapdf.reader.tts
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.util.Log
+import com.novapdf.reader.engine.PdfTextExtractor
 import com.novapdf.reader.model.PageTextContent
-import com.novapdf.reader.model.PdfSentence
 import com.novapdf.reader.model.PlaybackState
 import com.novapdf.reader.model.SpeechPosition
 import com.novapdf.reader.model.TtsSettings
@@ -26,8 +28,10 @@ class TtsController(
     private val scope: CoroutineScope
 ) : TextToSpeech.OnInitListener, SpeechForegroundService.ServiceActionCallback {
 
+    private val tag = "NovaPDF_TTS"
     private var tts: TextToSpeech? = null
-    private var isInitialized = false
+    var isInitialized = false
+        private set
 
     private val _playbackState = MutableStateFlow(PlaybackState.IDLE)
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
@@ -47,34 +51,65 @@ class TtsController(
     private var currentSentenceIndex = 0
 
     var onPageChangeRequested: ((Int) -> Unit)? = null
+    var onTextExtractionRequired: (suspend (Int) -> PageTextContent)? = null
     private var sleepTimerJob: Job? = null
 
     init {
         SpeechForegroundService.callback = this
-        tts = TextToSpeech(context.applicationContext, this)
+        initTtsEngine()
+    }
+
+    private fun initTtsEngine() {
+        try {
+            tts = TextToSpeech(context.applicationContext, this)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to instantiate TextToSpeech", e)
+        }
     }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             isInitialized = true
-            tts?.setOnUtteranceProgressListener(createUtteranceProgressListener())
-            loadAvailableVoices()
-            applySettings(_settings.value)
+            Log.d(tag, "TextToSpeech engine initialized successfully")
+
+            tts?.let { engine ->
+                // Set AudioAttributes for media speech
+                engine.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .build()
+                )
+
+                // Set language: try device default first, fallback to US English
+                val defaultLocale = Locale.getDefault()
+                val langResult = engine.setLanguage(defaultLocale)
+                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w(tag, "Default locale not supported, falling back to Locale.US")
+                    engine.setLanguage(Locale.US)
+                }
+
+                engine.setOnUtteranceProgressListener(createUtteranceProgressListener())
+                loadAvailableVoices()
+                applySettings(_settings.value)
+            }
+        } else {
+            Log.e(tag, "TextToSpeech init failed with status: $status")
         }
     }
 
     private fun loadAvailableVoices() {
         val voiceList = ArrayList<TtsVoiceOption>()
         try {
-            val voices = tts?.voices ?: emptySet()
-            for (v in voices) {
-                if (!v.isNetworkConnectionRequired) {
-                    val locale = v.locale
+            val voices = tts?.voices
+            if (!voices.isNullOrEmpty()) {
+                for (v in voices) {
+                    val locale = v.locale ?: Locale.US
                     voiceList.add(
                         TtsVoiceOption(
                             name = v.name,
                             locale = locale,
-                            displayName = "${locale.displayLanguage} - ${v.name.substringAfterLast("-", "Default")}",
+                            displayName = "${locale.displayLanguage} (${locale.country.ifBlank { "Default" }})",
                             countryName = locale.displayCountry,
                             languageName = locale.displayLanguage,
                             isNetworkConnectionRequired = v.isNetworkConnectionRequired,
@@ -84,11 +119,22 @@ class TtsController(
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w(tag, "Could not load voice list", e)
         }
 
-        // Sort voices alphabetically by language, then country
-        _availableVoices.value = voiceList.sortedWith(
+        if (voiceList.isEmpty()) {
+            voiceList.add(
+                TtsVoiceOption(
+                    name = "default",
+                    locale = Locale.getDefault(),
+                    displayName = "System Default Voice",
+                    countryName = Locale.getDefault().displayCountry,
+                    languageName = Locale.getDefault().displayLanguage
+                )
+            )
+        }
+
+        _availableVoices.value = voiceList.distinctBy { it.name }.sortedWith(
             compareBy({ it.languageName }, { it.countryName }, { it.name })
         )
     }
@@ -98,22 +144,33 @@ class TtsController(
     }
 
     fun play(pageIndex: Int? = null, sentenceIndex: Int? = null) {
-        if (!isInitialized) return
-
         if (pageIndex != null) currentPageIndex = pageIndex
         if (sentenceIndex != null) currentSentenceIndex = sentenceIndex
 
-        val content = pageContentMap[currentPageIndex]
-        if (content == null || content.sentences.isEmpty()) {
-            return
-        }
+        scope.launch(Dispatchers.Main) {
+            // If page text not cached yet, request immediate extraction
+            var content = pageContentMap[currentPageIndex]
+            if (content == null || content.sentences.isEmpty()) {
+                _playbackState.value = PlaybackState.BUFFERING
+                content = onTextExtractionRequired?.invoke(currentPageIndex)
+                if (content != null) {
+                    pageContentMap[currentPageIndex] = content
+                }
+            }
 
-        if (currentSentenceIndex >= content.sentences.size) {
-            currentSentenceIndex = 0
-        }
+            if (content == null || content.sentences.isEmpty()) {
+                Log.w(tag, "No sentences available to speak for page $currentPageIndex")
+                _playbackState.value = PlaybackState.IDLE
+                return@launch
+            }
 
-        speakCurrentSentence()
-        SpeechForegroundService.startService(context)
+            if (currentSentenceIndex !in content.sentences.indices) {
+                currentSentenceIndex = 0
+            }
+
+            speakCurrentSentence()
+            SpeechForegroundService.startService(context)
+        }
     }
 
     fun pause() {
@@ -125,7 +182,7 @@ class TtsController(
         if (_playbackState.value == PlaybackState.PLAYING) {
             pause()
         } else {
-            play()
+            play(currentPageIndex, currentSentenceIndex)
         }
     }
 
@@ -137,62 +194,69 @@ class TtsController(
     }
 
     fun skipNext() {
-        val content = pageContentMap[currentPageIndex] ?: return
-        if (currentSentenceIndex + 1 < content.sentences.size) {
+        val content = pageContentMap[currentPageIndex]
+        if (content != null && currentSentenceIndex + 1 < content.sentences.size) {
             currentSentenceIndex++
             speakCurrentSentence()
         } else {
-            // End of page, advance to next page if available
             val nextPage = currentPageIndex + 1
-            if (pageContentMap.containsKey(nextPage)) {
-                currentPageIndex = nextPage
-                currentSentenceIndex = 0
-                onPageChangeRequested?.invoke(nextPage)
-                speakCurrentSentence()
-            } else {
-                stop()
-            }
+            currentPageIndex = nextPage
+            currentSentenceIndex = 0
+            onPageChangeRequested?.invoke(nextPage)
+            play(nextPage, 0)
         }
     }
 
     fun skipPrevious() {
-        val content = pageContentMap[currentPageIndex] ?: return
         if (currentSentenceIndex > 0) {
             currentSentenceIndex--
             speakCurrentSentence()
         } else if (currentPageIndex > 0) {
             val prevPage = currentPageIndex - 1
+            currentPageIndex = prevPage
+            onPageChangeRequested?.invoke(prevPage)
             val prevContent = pageContentMap[prevPage]
-            if (prevContent != null && prevContent.sentences.isNotEmpty()) {
-                currentPageIndex = prevPage
-                currentSentenceIndex = (prevContent.sentences.size - 1).coerceAtLeast(0)
-                onPageChangeRequested?.invoke(prevPage)
-                speakCurrentSentence()
+            currentSentenceIndex = if (prevContent != null && prevContent.sentences.isNotEmpty()) {
+                prevContent.sentences.size - 1
+            } else {
+                0
             }
+            play(prevPage, currentSentenceIndex)
         }
     }
 
-    /**
-     * Interactive ReadEra Tap-to-Read: starts speaking directly from the tapped line or sentence.
-     */
     fun tapToRead(pageIndex: Int, normalizedX: Float, normalizedY: Float) {
-        val content = pageContentMap[pageIndex] ?: return
-        val targetSentence = content.sentences.firstOrNull { sentence ->
-            sentence.bounds.contains(normalizedX, normalizedY) ||
-            sentence.lineBounds.any { it.contains(normalizedX, normalizedY) }
-        } ?: content.sentences.firstOrNull() ?: return
+        scope.launch(Dispatchers.Main) {
+            var content = pageContentMap[pageIndex]
+            if (content == null || content.sentences.isEmpty()) {
+                content = onTextExtractionRequired?.invoke(pageIndex)
+                if (content != null) pageContentMap[pageIndex] = content
+            }
+            if (content == null || content.sentences.isEmpty()) return@launch
 
-        currentPageIndex = pageIndex
-        currentSentenceIndex = targetSentence.sentenceIndex
-        play(pageIndex, currentSentenceIndex)
+            val targetSentence = content.sentences.firstOrNull { sentence ->
+                sentence.bounds.contains(normalizedX, normalizedY) ||
+                sentence.lineBounds.any { it.contains(normalizedX, normalizedY) }
+            } ?: content.sentences.firstOrNull() ?: return@launch
+
+            currentPageIndex = pageIndex
+            currentSentenceIndex = targetSentence.sentenceIndex
+            play(pageIndex, currentSentenceIndex)
+        }
     }
 
     private fun speakCurrentSentence() {
+        val engine = tts
+        if (engine == null || !isInitialized) {
+            Log.w(tag, "TTS engine not ready yet")
+            return
+        }
+
         val content = pageContentMap[currentPageIndex] ?: return
         if (currentSentenceIndex !in content.sentences.indices) return
 
         val sentence = content.sentences[currentSentenceIndex]
-        val utteranceId = "utterance_${currentPageIndex}_${currentSentenceIndex}"
+        val utteranceId = "utterance_${currentPageIndex}_${currentSentenceIndex}_${System.currentTimeMillis()}"
 
         _currentPosition.value = SpeechPosition(
             pageIndex = currentPageIndex,
@@ -207,7 +271,12 @@ class TtsController(
             putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
         }
 
-        tts?.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        val speakResult = engine.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        if (speakResult != TextToSpeech.SUCCESS) {
+            Log.e(tag, "engine.speak failed with code: $speakResult. Trying fallback locale...")
+            engine.setLanguage(Locale.US)
+            engine.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        }
     }
 
     private fun createUtteranceProgressListener() = object : UtteranceProgressListener() {
@@ -226,11 +295,11 @@ class TtsController(
         }
 
         override fun onError(utteranceId: String?) {
+            Log.e(tag, "UtteranceProgressListener error on $utteranceId")
             _playbackState.value = PlaybackState.PAUSED
         }
 
         override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
-            // Real-time word boundary callback (Android API 26+)
             val pos = _currentPosition.value
             _currentPosition.value = pos.copy(
                 charStartInSentence = start,
@@ -285,8 +354,7 @@ class TtsController(
         }
     }
 
-    // Callbacks from Notification / Bluetooth / Lock screen
-    override fun onPlayClicked() = play()
+    override fun onPlayClicked() = play(currentPageIndex, currentSentenceIndex)
     override fun onPauseClicked() = pause()
     override fun onPrevClicked() = skipPrevious()
     override fun onNextClicked() = skipNext()
@@ -298,4 +366,3 @@ class TtsController(
         tts = null
     }
 }
-

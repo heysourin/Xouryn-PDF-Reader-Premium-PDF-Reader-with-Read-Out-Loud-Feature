@@ -10,7 +10,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,10 +34,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.novapdf.reader.engine.PdfEngine
 import com.novapdf.reader.model.Annotation
-import com.novapdf.reader.model.NormalizedRect
 import com.novapdf.reader.model.PageDimension
 import com.novapdf.reader.model.SpeechPosition
 import com.novapdf.reader.model.ToolType
@@ -47,7 +48,7 @@ import com.novapdf.reader.ui.annotations.AnnotationOverlayCanvas
 fun PageCanvasView(
     pageIndex: Int,
     dimension: PageDimension?,
-    bitmap: Bitmap?,
+    pdfEngine: PdfEngine,
     annotations: List<Annotation>,
     activeTool: ToolType,
     currentColor: Color,
@@ -59,7 +60,16 @@ fun PageCanvasView(
     onTapToReadRequested: (normalizedX: Float, normalizedY: Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val aspectRatio = dimension?.aspectRatio ?: (1f / 1.414f) // Default standard A4 ratio
+    val configuration = LocalConfiguration.current
+    val screenWidthPx = (configuration.screenWidthDp * configuration.fontScale * 2.5f).toInt().coerceIn(720, 1400)
+    val aspectRatio = dimension?.aspectRatio ?: (1f / 1.414f)
+
+    // Autonomous per-page bitmap rendering with LRU cache check
+    val pageBitmap by produceState<Bitmap?>(initialValue = pdfEngine.getCachedPage(pageIndex, screenWidthPx), key1 = pageIndex) {
+        if (value == null) {
+            value = pdfEngine.renderPage(pageIndex, targetWidth = screenWidthPx)
+        }
+    }
 
     // Pulse animation for ReadEra TTS active line highlight
     val infiniteTransition = rememberInfiniteTransition(label = "tts_pulse")
@@ -77,15 +87,16 @@ fun PageCanvasView(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
-            .shadow(4.dp, RoundedCornerShape(4.dp)),
+            .shadow(3.dp, RoundedCornerShape(4.dp)),
         shape = RoundedCornerShape(4.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // 1. PDF Rendered Bitmap
-            if (bitmap != null) {
+            val bmp = pageBitmap
+            if (bmp != null) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = bmp.asImageBitmap(),
                     contentDescription = "Page ${pageIndex + 1}",
                     modifier = Modifier.fillMaxSize()
                 )
@@ -147,7 +158,6 @@ fun PageCanvasView(
                 currentAlpha = currentAlpha,
                 onAnnotationAdded = onAnnotationAdded,
                 onEraseRequested = { x, y ->
-                    // Normalize coordinates
                     val normX = if (dimension != null && dimension.width > 0) x / dimension.width else 0.5f
                     val normY = if (dimension != null && dimension.height > 0) y / dimension.height else 0.5f
                     onEraseRequested(normX, normY)
@@ -178,4 +188,3 @@ fun PageCanvasView(
         }
     }
 }
-

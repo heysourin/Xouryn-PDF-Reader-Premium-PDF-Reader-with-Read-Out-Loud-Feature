@@ -1,6 +1,5 @@
 package com.novapdf.reader.ui.viewer
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,12 +9,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.novapdf.reader.engine.PdfEngine
 import com.novapdf.reader.model.Annotation
 import com.novapdf.reader.model.PageDimension
 import com.novapdf.reader.model.SpeechPosition
@@ -26,8 +25,7 @@ fun DualPageSpreadView(
     leftPageIndex: Int,
     rightPageIndex: Int?,
     dimensions: List<PageDimension>,
-    leftBitmap: Bitmap?,
-    rightBitmap: Bitmap?,
+    pdfEngine: PdfEngine,
     getAnnotationsForPage: (Int) -> List<Annotation>,
     activeTool: ToolType,
     currentColor: Color,
@@ -52,7 +50,7 @@ fun DualPageSpreadView(
             PageCanvasView(
                 pageIndex = leftPageIndex,
                 dimension = leftDim,
-                bitmap = leftBitmap,
+                pdfEngine = pdfEngine,
                 annotations = getAnnotationsForPage(leftPageIndex),
                 activeTool = activeTool,
                 currentColor = currentColor,
@@ -82,7 +80,7 @@ fun DualPageSpreadView(
                 PageCanvasView(
                     pageIndex = rightPageIndex,
                     dimension = rightDim,
-                    bitmap = rightBitmap,
+                    pdfEngine = pdfEngine,
                     annotations = getAnnotationsForPage(rightPageIndex),
                     activeTool = activeTool,
                     currentColor = currentColor,
@@ -100,4 +98,3 @@ fun DualPageSpreadView(
         }
     }
 }
-

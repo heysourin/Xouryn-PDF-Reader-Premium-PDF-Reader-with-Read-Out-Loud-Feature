@@ -79,7 +79,9 @@ import com.novapdf.reader.ui.theme.ReadingThemeMode
 import com.novapdf.reader.ui.tts.TtsBottomBar
 import com.novapdf.reader.ui.tts.TtsSettingsDialog
 import com.novapdf.reader.ui.tts.VoiceSelectionSheet
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class ActiveDrawer {
     NONE,
@@ -142,42 +144,33 @@ fun PdfViewerScreen(
     var showVoiceSelectionSheet by remember { mutableStateOf(false) }
     val isTtsBarVisible = ttsPlaybackState != PlaybackState.IDLE || activeTool == ToolType.TTS_READER
 
-    // Page Bitmaps Cache
-    val pageBitmaps = remember { mutableStateOf(HashMap<Int, Bitmap>()) }
     val listState = rememberLazyListState()
 
-    // Page preloading & text extraction
-    fun loadPageData(pageIndex: Int) {
-        if (pageIndex !in 0 until document.pageCount) return
-        scope.launch {
-            if (!pageBitmaps.value.containsKey(pageIndex)) {
-                val dim = document.pageDimensions.getOrNull(pageIndex)
-                val targetW = dim?.width ?: 800
-                val targetH = dim?.height ?: 1100
-                val bmp = pdfEngine.renderPage(pageIndex, targetW, targetH)
-                if (bmp != null) {
-                    val map = HashMap(pageBitmaps.value)
-                    map[pageIndex] = bmp
-                    pageBitmaps.value = map
-                }
-            }
-
-            // Extract text for TTS
-            val dim = document.pageDimensions.getOrNull(pageIndex)
-            val textContent = textExtractor.extractPageText(
+    // Configure on-demand text extraction callback for TTS
+    LaunchedEffect(ttsController, document) {
+        ttsController.onTextExtractionRequired = { pageIdx ->
+            val dim = document.pageDimensions.getOrNull(pageIdx)
+            textExtractor.extractPageText(
                 document.uri,
-                pageIndex,
+                pageIdx,
                 dim?.width ?: 800,
                 dim?.height ?: 1100
             )
-            ttsController.setPageContent(pageIndex, textContent)
         }
-    }
 
-    LaunchedEffect(currentPageIndex, document) {
-        loadPageData(currentPageIndex)
-        loadPageData(currentPageIndex + 1)
-        if (currentPageIndex > 0) loadPageData(currentPageIndex - 1)
+        // Asynchronously preload text for the current and adjacent page
+        scope.launch(Dispatchers.Default) {
+            val dim = document.pageDimensions.getOrNull(currentPageIndex)
+            val currentText = textExtractor.extractPageText(document.uri, currentPageIndex, dim?.width ?: 800, dim?.height ?: 1100)
+            ttsController.setPageContent(currentPageIndex, currentText)
+
+            val nextIdx = currentPageIndex + 1
+            if (nextIdx < document.pageCount) {
+                val nextDim = document.pageDimensions.getOrNull(nextIdx)
+                val nextText = textExtractor.extractPageText(document.uri, nextIdx, nextDim?.width ?: 800, nextDim?.height ?: 1100)
+                ttsController.setPageContent(nextIdx, nextText)
+            }
+        }
     }
 
     // Connect TTS page change callback to view pager / scroll
@@ -357,10 +350,9 @@ fun PdfViewerScreen(
                     leftPageIndex = leftPage,
                     rightPageIndex = rightPage,
                     dimensions = document.pageDimensions,
-                    leftBitmap = pageBitmaps.value[leftPage],
-                    rightBitmap = rightPage?.let { pageBitmaps.value[it] },
+                    pdfEngine = pdfEngine,
                     getAnnotationsForPage = { p ->
-                        val dummy = annotationVersion // Recompose on annotation change
+                        val dummy = annotationVersion
                         annotationEngine.getAnnotationsForPage(p)
                     },
                     activeTool = activeTool,
@@ -386,7 +378,7 @@ fun PdfViewerScreen(
                             PageCanvasView(
                                 pageIndex = pageIndex,
                                 dimension = dim,
-                                bitmap = pageBitmaps.value[pageIndex],
+                                pdfEngine = pdfEngine,
                                 annotations = run {
                                     val dummy = annotationVersion
                                     annotationEngine.getAnnotationsForPage(pageIndex)
@@ -419,7 +411,7 @@ fun PdfViewerScreen(
                             pageCount = document.pageCount,
                             currentPageIndex = currentPageIndex,
                             dimensions = document.pageDimensions,
-                            getThumbnailBitmap = { p -> pageBitmaps.value[p] },
+                            getThumbnailBitmap = { p -> pdfEngine.getCachedPage(p) },
                             onPageSelected = { selected ->
                                 currentPageIndex = selected
                                 activeDrawer = ActiveDrawer.NONE
@@ -521,4 +513,3 @@ fun PdfViewerScreen(
         }
     }
 }
-
