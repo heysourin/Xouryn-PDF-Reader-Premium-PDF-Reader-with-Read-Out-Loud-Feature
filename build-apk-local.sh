@@ -8,7 +8,7 @@ JDK_DIR="$TOOLS_DIR/jdk17"
 GRADLE_DIR="$TOOLS_DIR/gradle-8.11.1"
 
 echo "===================================================="
-echo "   xouryn pdf reader Automated APK Build Script"
+echo "   Xouryn PDF Reader Automated APK Build Script"
 echo "===================================================="
 
 mkdir -p "$TOOLS_DIR"
@@ -45,29 +45,32 @@ echo "✔ Using Gradle: $("$GRADLE_DIR/bin/gradle" --version 2>&1 | head -n 3 | 
 # Generate wrapper jar if needed
 "$GRADLE_DIR/bin/gradle" wrapper --gradle-version 8.11.1 >/dev/null 2>&1 || true
 
-# 4. Compile xouryn pdf reader APK
+# 4. Compile Xouryn PDF Reader APK
 cd "$PROJECT_DIR"
-echo "🔨 Compiling xouryn pdf reader APK..."
+echo "🔨 Compiling Xouryn PDF Reader APK..."
 "$GRADLE_DIR/bin/gradle" assembleDebug
 
 OUTPUT_APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-FINAL_APK="$PROJECT_DIR/xouryn-pdf-reader.apk"
+FINAL_APK="$PROJECT_DIR/Xouryn-PDF-Reader.apk"
+LOWER_APK="$PROJECT_DIR/xouryn-pdf-reader.apk"
 ALT_APK="$PROJECT_DIR/xouryn_pdf_reader.apk"
 LEGACY_APK="$PROJECT_DIR/NovaPDF-debug.apk"
 
 if [ -f "$OUTPUT_APK" ]; then
     cp "$OUTPUT_APK" "$FINAL_APK"
+    cp "$OUTPUT_APK" "$LOWER_APK"
     cp "$OUTPUT_APK" "$ALT_APK"
     cp "$OUTPUT_APK" "$LEGACY_APK"
     echo ""
     echo "===================================================="
     echo "🎉 SUCCESS! Your APK is ready:"
     echo "   $FINAL_APK"
+    echo "   $LOWER_APK"
     echo "===================================================="
     echo ""
     ls -lh "$FINAL_APK"
     echo ""
-    echo "You can now install 'xouryn-pdf-reader.apk' directly on your phone or tablet!"
+    echo "You can now install 'Xouryn-PDF-Reader.apk' directly on your phone or tablet!"
 else
     echo "❌ Build did not produce an APK. Please check logs."
     exit 1

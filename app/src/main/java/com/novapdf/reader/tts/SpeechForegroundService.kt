@@ -80,7 +80,7 @@ class SpeechForegroundService : Service() {
         }
 
         val notification = buildNotification(
-            title = "xouryn pdf reader",
+            title = "Xouryn PDF Reader",
             content = "Speaking active document",
             isPlaying = intent?.action != ACTION_PAUSE
         )
@@ -168,7 +168,7 @@ class SpeechForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "xouryn pdf reader",
+                "Xouryn PDF Reader",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Audio playback controls for PDF pages read out loud"
