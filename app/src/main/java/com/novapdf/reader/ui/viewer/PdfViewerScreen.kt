@@ -351,6 +351,8 @@ fun PdfViewerScreen(
                     rightPageIndex = rightPage,
                     dimensions = document.pageDimensions,
                     pdfEngine = pdfEngine,
+                    textExtractor = textExtractor,
+                    documentUri = document.uri,
                     getAnnotationsForPage = { p ->
                         val dummy = annotationVersion
                         annotationEngine.getAnnotationsForPage(p)
@@ -362,7 +364,8 @@ fun PdfViewerScreen(
                     speechPosition = ttsPosition,
                     onAnnotationAdded = { annot -> annotationEngine.addAnnotation(annot) },
                     onEraseRequested = { p, x, y -> annotationEngine.eraseAt(p, x, y) },
-                    onTapToReadRequested = { p, x, y -> ttsController.tapToRead(p, x, y) }
+                    onTapToReadRequested = { p, x, y -> ttsController.tapToRead(p, x, y) },
+                    onSpeakFromSentenceRequested = { p, s -> ttsController.play(p, s) }
                 )
             } else {
                 // Continuous Vertical Scroll (Handheld & Portrait Tablet Mode)
@@ -379,6 +382,8 @@ fun PdfViewerScreen(
                                 pageIndex = pageIndex,
                                 dimension = dim,
                                 pdfEngine = pdfEngine,
+                                textExtractor = textExtractor,
+                                documentUri = document.uri,
                                 annotations = run {
                                     val dummy = annotationVersion
                                     annotationEngine.getAnnotationsForPage(pageIndex)
@@ -391,6 +396,7 @@ fun PdfViewerScreen(
                                 onAnnotationAdded = { annot -> annotationEngine.addAnnotation(annot) },
                                 onEraseRequested = { x, y -> annotationEngine.eraseAt(pageIndex, x, y) },
                                 onTapToReadRequested = { x, y -> ttsController.tapToRead(pageIndex, x, y) },
+                                onSpeakFromSentenceRequested = { sIndex -> ttsController.play(pageIndex, sIndex) },
                                 modifier = Modifier.padding(bottom = 16.dp)
                             )
                         }

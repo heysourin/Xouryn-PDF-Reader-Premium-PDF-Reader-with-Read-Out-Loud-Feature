@@ -34,6 +34,7 @@ import com.novapdf.reader.model.PdfDocumentModel
 import com.novapdf.reader.tts.TtsController
 import com.novapdf.reader.ui.theme.NovaPDFTheme
 import com.novapdf.reader.ui.viewer.PdfViewerScreen
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +69,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        try {
+            PDFBoxResourceLoader.init(applicationContext)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         pdfEngine = PdfEngine(applicationContext)
         textExtractor = PdfTextExtractor(applicationContext)

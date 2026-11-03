@@ -71,6 +71,7 @@ dependencies {
     implementation(libs.androidx.media3.common)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.gson)
+    implementation(libs.pdfbox.android)
 
     debugImplementation(libs.androidx.ui.tooling)
 }

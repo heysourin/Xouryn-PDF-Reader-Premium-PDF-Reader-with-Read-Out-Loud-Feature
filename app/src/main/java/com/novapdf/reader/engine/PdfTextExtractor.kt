@@ -6,14 +6,15 @@ import com.novapdf.reader.model.NormalizedRect
 import com.novapdf.reader.model.PageTextContent
 import com.novapdf.reader.model.PdfSentence
 import com.novapdf.reader.model.PdfTextLine
+import com.novapdf.reader.model.PdfWord
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.text.TextPosition
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.text.BreakIterator
 import java.util.Locale
-import java.util.zip.InflaterInputStream
 
 class PdfTextExtractor(private val context: Context) {
 
@@ -24,155 +25,170 @@ class PdfTextExtractor(private val context: Context) {
         pageIndex: Int,
         pageWidth: Int,
         pageHeight: Int
-    ): PageTextContent = withContext(Dispatchers.Default) {
+    ): PageTextContent = withContext(Dispatchers.IO) {
         pageTextCache[pageIndex]?.let { return@withContext it }
 
-        // Attempt decompressed PDF text stream extraction
-        val rawText = tryExtractDecompressedPdfText(uri, pageIndex)
-            ?: generateReadableFallbackText(pageIndex)
+        var pdDocument: PDDocument? = null
+        try {
+            val stream: InputStream? = context.contentResolver.openInputStream(uri)
+            if (stream != null) {
+                pdDocument = PDDocument.load(stream)
+                val totalPages = pdDocument.numberOfPages
 
-        val sentences = tokenizeSentencesWithBounds(rawText, pageWidth, pageHeight)
-        val lines = buildLinesFromSentences(sentences)
+                if (pageIndex in 0 until totalPages) {
+                    val page = pdDocument.getPage(pageIndex)
+                    val mediaBox = page.cropBox ?: page.mediaBox
+                    val actualWidth = if (mediaBox != null && mediaBox.width > 0) mediaBox.width else pageWidth.toFloat().coerceAtLeast(1f)
+                    val actualHeight = if (mediaBox != null && mediaBox.height > 0) mediaBox.height else pageHeight.toFloat().coerceAtLeast(1f)
 
-        val result = PageTextContent(
-            pageIndex = pageIndex,
-            fullText = rawText,
-            lines = lines,
-            sentences = sentences
-        )
-        pageTextCache[pageIndex] = result
-        result
-    }
+                    val wordsOnPage = ArrayList<PdfWord>()
+                    val linesOnPage = ArrayList<PdfTextLine>()
+                    val pageTextSb = StringBuilder()
 
-    private fun tryExtractDecompressedPdfText(uri: Uri, targetPageIndex: Int): String? {
-        return try {
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return null
+                    val stripper = object : PDFTextStripper() {
+                        init {
+                            startPage = pageIndex + 1
+                            endPage = pageIndex + 1
+                            sortByPosition = true
+                        }
 
-            val textBuilder = StringBuilder()
-            val streamMarker = "stream".toByteArray(Charsets.ISO_8859_1)
-            val endStreamMarker = "endstream".toByteArray(Charsets.ISO_8859_1)
+                        override fun writeString(string: String, textPositions: MutableList<TextPosition>) {
+                            super.writeString(string, textPositions)
+                            if (textPositions.isEmpty()) return
 
-            var idx = 0
-            var streamCount = 0
+                            val currentWordSb = StringBuilder()
+                            var wordStartChar = pageTextSb.length
+                            var minX = Float.MAX_VALUE
+                            var minY = Float.MAX_VALUE
+                            var maxX = Float.MIN_VALUE
+                            var maxY = Float.MIN_VALUE
 
-            while (idx < bytes.size - streamMarker.size) {
-                val streamStart = indexOfBytes(bytes, streamMarker, idx)
-                if (streamStart == -1) break
+                            val lineWords = ArrayList<PdfWord>()
+                            var lineMinX = Float.MAX_VALUE
+                            var lineMinY = Float.MAX_VALUE
+                            var lineMaxX = Float.MIN_VALUE
+                            var lineMaxY = Float.MIN_VALUE
 
-                val dataStart = skipWhitespace(bytes, streamStart + streamMarker.size)
-                val streamEnd = indexOfBytes(bytes, endStreamMarker, dataStart)
-                if (streamEnd == -1) break
+                            for (pos in textPositions) {
+                                val charStr = pos.unicode ?: continue
+                                val x = (pos.xDirAdj / actualWidth).coerceIn(0f, 1f)
+                                val topY = ((pos.yDirAdj - pos.heightDir) / actualHeight).coerceIn(0f, 1f)
+                                val w = (pos.widthDirAdj / actualWidth).coerceIn(0f, 1f)
+                                val h = (pos.heightDir / actualHeight).coerceIn(0f, 1f)
 
-                val streamLength = streamEnd - dataStart
-                if (streamLength in 10..5000000) {
-                    val streamBytes = bytes.copyOfRange(dataStart, streamEnd)
-                    val decompressed = tryDecompressFlate(streamBytes) ?: streamBytes
-                    val textFromStream = parsePdfTextOperators(decompressed)
-                    if (textFromStream.isNotBlank()) {
-                        textBuilder.append(textFromStream).append(" ")
+                                lineMinX = minOf(lineMinX, x)
+                                lineMinY = minOf(lineMinY, topY)
+                                lineMaxX = maxOf(lineMaxX, x + w)
+                                lineMaxY = maxOf(lineMaxY, topY + h)
+
+                                if (charStr == " " || charStr == "\t") {
+                                    if (currentWordSb.isNotEmpty()) {
+                                        val wordText = currentWordSb.toString()
+                                        val word = PdfWord(
+                                            text = wordText,
+                                            bounds = NormalizedRect(
+                                                left = minX.coerceIn(0f, 1f),
+                                                top = minY.coerceIn(0f, 1f),
+                                                right = maxX.coerceIn(0f, 1f),
+                                                bottom = maxY.coerceIn(0f, 1f)
+                                            ),
+                                            charStart = wordStartChar,
+                                            charEnd = pageTextSb.length
+                                        )
+                                        wordsOnPage.add(word)
+                                        lineWords.add(word)
+                                        currentWordSb.clear()
+                                        minX = Float.MAX_VALUE
+                                        minY = Float.MAX_VALUE
+                                        maxX = Float.MIN_VALUE
+                                        maxY = Float.MIN_VALUE
+                                    }
+                                    pageTextSb.append(charStr)
+                                    wordStartChar = pageTextSb.length
+                                } else {
+                                    if (currentWordSb.isEmpty()) {
+                                        wordStartChar = pageTextSb.length
+                                    }
+                                    currentWordSb.append(charStr)
+                                    minX = minOf(minX, x)
+                                    minY = minOf(minY, topY)
+                                    maxX = maxOf(maxX, x + w)
+                                    maxY = maxOf(maxY, topY + h)
+                                    pageTextSb.append(charStr)
+                                }
+                            }
+
+                            if (currentWordSb.isNotEmpty()) {
+                                val wordText = currentWordSb.toString()
+                                val word = PdfWord(
+                                    text = wordText,
+                                    bounds = NormalizedRect(
+                                        left = minX.coerceIn(0f, 1f),
+                                        top = minY.coerceIn(0f, 1f),
+                                        right = maxX.coerceIn(0f, 1f),
+                                        bottom = maxY.coerceIn(0f, 1f)
+                                    ),
+                                    charStart = wordStartChar,
+                                    charEnd = pageTextSb.length
+                                )
+                                wordsOnPage.add(word)
+                                lineWords.add(word)
+                            }
+
+                            if (lineWords.isNotEmpty()) {
+                                linesOnPage.add(
+                                    PdfTextLine(
+                                        lineIndex = linesOnPage.size,
+                                        text = string.trim(),
+                                        bounds = NormalizedRect(
+                                            left = lineMinX.coerceIn(0f, 1f),
+                                            top = lineMinY.coerceIn(0f, 1f),
+                                            right = lineMaxX.coerceIn(0f, 1f),
+                                            bottom = lineMaxY.coerceIn(0f, 1f)
+                                        ),
+                                        words = lineWords
+                                    )
+                                )
+                            }
+                            pageTextSb.append("\n")
+                        }
+                    }
+
+                    stripper.getText(pdDocument)
+
+                    val pageFullText = pageTextSb.toString().trim()
+                    if (pageFullText.isNotBlank()) {
+                        val sentences = buildSentencesFromWords(pageFullText, wordsOnPage, linesOnPage)
+                        val content = PageTextContent(
+                            pageIndex = pageIndex,
+                            fullText = pageFullText,
+                            lines = linesOnPage,
+                            sentences = sentences
+                        )
+                        pageTextCache[pageIndex] = content
+                        return@withContext content
                     }
                 }
-
-                idx = streamEnd + endStreamMarker.size
-                streamCount++
-            }
-
-            val fullExtracted = textBuilder.toString().trim()
-            if (fullExtracted.length > 15) {
-                // If document has multiple pages, extract a portion corresponding to page
-                fullExtracted
-            } else {
-                null
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            null
-        }
-    }
-
-    private fun tryDecompressFlate(data: ByteArray): ByteArray? {
-        return try {
-            InflaterInputStream(ByteArrayInputStream(data)).use { inflater ->
-                val buffer = ByteArray(8192)
-                val out = ByteArrayOutputStream()
-                var read: Int
-                while (inflater.read(buffer).also { read = it } != -1) {
-                    out.write(buffer, 0, read)
-                }
-                out.toByteArray()
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun parsePdfTextOperators(streamBytes: ByteArray): String {
-        val content = String(streamBytes, Charsets.ISO_8859_1)
-        val sb = StringBuilder()
-
-        // 1. Literal strings: (Hello World) Tj or (Text) '
-        val tjRegex = Regex("""\(((?:[^()\\]|\\.)*)\)\s*(?:Tj|'|")""")
-        for (match in tjRegex.findAll(content)) {
-            val text = cleanPdfString(match.groupValues[1])
-            if (text.isNotBlank()) sb.append(text).append(" ")
-        }
-
-        // 2. Array strings: [(Hello) -10 (World)] TJ
-        val arrayTjRegex = Regex("""\[((?:[^\[\]]|\[(?:[^\[\]])*\])*)\]\s*TJ""")
-        for (match in arrayTjRegex.findAll(content)) {
-            val inner = match.groupValues[1]
-            val subStrings = Regex("""\(((?:[^()\\]|\\.)*)\)""").findAll(inner)
-            for (sub in subStrings) {
-                val text = cleanPdfString(sub.groupValues[1])
-                if (text.isNotBlank()) sb.append(text).append(" ")
+        } finally {
+            try {
+                pdDocument?.close()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
-        return sb.toString().trim()
+        val fallback = generateReadableFallbackText(pageIndex)
+        pageTextCache[pageIndex] = fallback
+        fallback
     }
 
-    private fun cleanPdfString(raw: String): String {
-        return raw.replace("\\n", " ")
-            .replace("\\r", " ")
-            .replace("\\t", " ")
-            .replace("\\(", "(")
-            .replace("\\)", ")")
-            .replace("\\\\", "\\")
-            .trim()
-    }
-
-    private fun indexOfBytes(source: ByteArray, target: ByteArray, fromIndex: Int): Int {
-        if (fromIndex >= source.size || target.isEmpty()) return -1
-        outer@ for (i in fromIndex..(source.size - target.size)) {
-            for (j in target.indices) {
-                if (source[i + j] != target[j]) continue@outer
-            }
-            return i
-        }
-        return -1
-    }
-
-    private fun skipWhitespace(bytes: ByteArray, fromIndex: Int): Int {
-        var idx = fromIndex
-        while (idx < bytes.size && (bytes[idx] == 0x0A.toByte() || bytes[idx] == 0x0D.toByte() || bytes[idx] == 0x20.toByte())) {
-            idx++
-        }
-        return idx
-    }
-
-    private fun generateReadableFallbackText(pageIndex: Int): String {
-        return when (pageIndex % 3) {
-            0 -> "Welcome to NovaPDF. Read Out Loud brings high-performance speech to your documents. You can tap on any line on the page to start listening immediately. Adjust reading speed from 0.5x to 3.0x, choose different accents, and enjoy background playback."
-            1 -> "NovaPDF supports stylus and S-Pen input with palm rejection and Bézier curve smoothing. Use the highlighter tool with Multiply blend mode to mark key sections without hiding underlying text. On tablets, switch to dual-page spread mode for a natural book reading layout."
-            else -> "Text-to-speech technology transforms passive reading into an active audio experience. NovaPDF highlights each spoken line in real time as the audio plays. Sleep timers allow you to listen comfortably at night without draining your device battery."
-        }
-    }
-
-    private fun tokenizeSentencesWithBounds(
+    private fun buildSentencesFromWords(
         fullText: String,
-        pageWidth: Int,
-        pageHeight: Int
+        words: List<PdfWord>,
+        lines: List<PdfTextLine>
     ): List<PdfSentence> {
         val iterator = BreakIterator.getSentenceInstance(Locale.getDefault())
         iterator.setText(fullText)
@@ -182,52 +198,47 @@ class PdfTextExtractor(private val context: Context) {
         var end = iterator.next()
         var sentenceIndex = 0
 
-        var currentY = 0.08f
-        val leftMargin = 0.08f
-        val rightMargin = 0.92f
-        val lineHeight = 0.032f
-
         while (end != BreakIterator.DONE) {
             val sentenceText = fullText.substring(start, end).trim()
             if (sentenceText.isNotBlank()) {
-                val charCount = sentenceText.length
-                val estimatedLines = ((charCount.toFloat() / 70f).coerceAtLeast(1f)).toInt()
-                val sentenceHeight = estimatedLines * lineHeight
+                // Find all words belonging to this sentence
+                val sentenceWords = words.filter { it.charStart >= start && it.charEnd <= end }
 
-                val lineBounds = ArrayList<NormalizedRect>()
-                for (l in 0 until estimatedLines) {
-                    val lineTop = currentY + (l * lineHeight)
-                    lineBounds.add(
-                        NormalizedRect(
-                            left = leftMargin,
-                            top = lineTop,
-                            right = rightMargin,
-                            bottom = (lineTop + lineHeight * 0.9f).coerceAtMost(0.95f)
-                        )
-                    )
+                val lineBounds = if (sentenceWords.isNotEmpty()) {
+                    // Group words by approximate vertical line position (within 1.5% Y difference)
+                    sentenceWords.groupBy { (it.bounds.top * 100).toInt() }.values.map { lineWordGroup ->
+                        val left = lineWordGroup.minOf { it.bounds.left }
+                        val top = lineWordGroup.minOf { it.bounds.top }
+                        val right = lineWordGroup.maxOf { it.bounds.right }
+                        val bottom = lineWordGroup.maxOf { it.bounds.bottom }
+                        NormalizedRect(left, top, right, bottom)
+                    }
+                } else {
+                    emptyList()
                 }
 
-                val sentenceBounds = NormalizedRect(
-                    left = leftMargin,
-                    top = currentY,
-                    right = rightMargin,
-                    bottom = (currentY + sentenceHeight).coerceAtMost(0.95f)
-                )
+                val sentenceBounds = if (sentenceWords.isNotEmpty()) {
+                    NormalizedRect(
+                        left = sentenceWords.minOf { it.bounds.left },
+                        top = sentenceWords.minOf { it.bounds.top },
+                        right = sentenceWords.maxOf { it.bounds.right },
+                        bottom = sentenceWords.maxOf { it.bounds.bottom }
+                    )
+                } else {
+                    NormalizedRect(0.08f, 0.1f, 0.92f, 0.15f)
+                }
 
                 sentences.add(
                     PdfSentence(
                         sentenceIndex = sentenceIndex++,
                         text = sentenceText,
                         bounds = sentenceBounds,
-                        lineBounds = lineBounds,
+                        lineBounds = lineBounds.ifEmpty { listOf(sentenceBounds) },
                         charOffsetStart = start,
                         charOffsetEnd = end
                     )
                 )
-
-                currentY += sentenceHeight + 0.015f
             }
-
             start = end
             end = iterator.next()
         }
@@ -235,15 +246,27 @@ class PdfTextExtractor(private val context: Context) {
         return sentences
     }
 
-    private fun buildLinesFromSentences(sentences: List<PdfSentence>): List<PdfTextLine> {
-        val lines = ArrayList<PdfTextLine>()
-        var lineIndex = 0
-        for (sentence in sentences) {
-            for (lineBound in sentence.lineBounds) {
-                lines.add(PdfTextLine(lineIndex++, sentence.text, lineBound))
-            }
-        }
-        return lines
+    private fun generateReadableFallbackText(pageIndex: Int): PageTextContent {
+        val text = "Page ${pageIndex + 1}. Scanned or image document without text layer."
+        val bounds = NormalizedRect(0.08f, 0.08f, 0.92f, 0.12f)
+        val sentence = PdfSentence(
+            sentenceIndex = 0,
+            text = text,
+            bounds = bounds,
+            lineBounds = listOf(bounds),
+            charOffsetStart = 0,
+            charOffsetEnd = text.length
+        )
+        return PageTextContent(
+            pageIndex = pageIndex,
+            fullText = text,
+            lines = listOf(PdfTextLine(0, text, bounds)),
+            sentences = listOf(sentence)
+        )
+    }
+
+    fun getCachedPageText(pageIndex: Int): PageTextContent? {
+        return pageTextCache[pageIndex]
     }
 
     fun clear() {

@@ -6,6 +6,7 @@ import java.util.UUID
 
 enum class ToolType {
     PAN,
+    TEXT_SELECT, // Xodo-style text selection, copy, and markup
     STYLUS_PEN,
     HIGHLIGHTER,
     UNDERLINE,

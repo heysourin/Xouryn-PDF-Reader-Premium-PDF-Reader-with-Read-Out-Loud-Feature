@@ -1,5 +1,6 @@
 package com.novapdf.reader.ui.viewer
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.novapdf.reader.engine.PdfEngine
+import com.novapdf.reader.engine.PdfTextExtractor
 import com.novapdf.reader.model.Annotation
 import com.novapdf.reader.model.PageDimension
 import com.novapdf.reader.model.SpeechPosition
@@ -26,6 +28,8 @@ fun DualPageSpreadView(
     rightPageIndex: Int?,
     dimensions: List<PageDimension>,
     pdfEngine: PdfEngine,
+    textExtractor: PdfTextExtractor,
+    documentUri: Uri,
     getAnnotationsForPage: (Int) -> List<Annotation>,
     activeTool: ToolType,
     currentColor: Color,
@@ -35,6 +39,7 @@ fun DualPageSpreadView(
     onAnnotationAdded: (Annotation) -> Unit,
     onEraseRequested: (pageIndex: Int, x: Float, y: Float) -> Unit,
     onTapToReadRequested: (pageIndex: Int, x: Float, y: Float) -> Unit,
+    onSpeakFromSentenceRequested: (pageIndex: Int, sentenceIndex: Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -51,6 +56,8 @@ fun DualPageSpreadView(
                 pageIndex = leftPageIndex,
                 dimension = leftDim,
                 pdfEngine = pdfEngine,
+                textExtractor = textExtractor,
+                documentUri = documentUri,
                 annotations = getAnnotationsForPage(leftPageIndex),
                 activeTool = activeTool,
                 currentColor = currentColor,
@@ -59,7 +66,8 @@ fun DualPageSpreadView(
                 speechPosition = speechPosition,
                 onAnnotationAdded = onAnnotationAdded,
                 onEraseRequested = { x, y -> onEraseRequested(leftPageIndex, x, y) },
-                onTapToReadRequested = { x, y -> onTapToReadRequested(leftPageIndex, x, y) }
+                onTapToReadRequested = { x, y -> onTapToReadRequested(leftPageIndex, x, y) },
+                onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(leftPageIndex, sIndex) }
             )
         }
 
@@ -81,6 +89,8 @@ fun DualPageSpreadView(
                     pageIndex = rightPageIndex,
                     dimension = rightDim,
                     pdfEngine = pdfEngine,
+                    textExtractor = textExtractor,
+                    documentUri = documentUri,
                     annotations = getAnnotationsForPage(rightPageIndex),
                     activeTool = activeTool,
                     currentColor = currentColor,
@@ -89,7 +99,8 @@ fun DualPageSpreadView(
                     speechPosition = speechPosition,
                     onAnnotationAdded = onAnnotationAdded,
                     onEraseRequested = { x, y -> onEraseRequested(rightPageIndex, x, y) },
-                    onTapToReadRequested = { x, y -> onTapToReadRequested(rightPageIndex, x, y) }
+                    onTapToReadRequested = { x, y -> onTapToReadRequested(rightPageIndex, x, y) },
+                    onSpeakFromSentenceRequested = { sIndex -> onSpeakFromSentenceRequested(rightPageIndex, sIndex) }
                 )
             }
         } else {

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.TrendingFlat
@@ -83,6 +84,14 @@ fun StylusToolbar(
                 tooltip = "Pan / Scroll",
                 isSelected = activeTool == ToolType.PAN,
                 onClick = { onToolSelected(ToolType.PAN) }
+            )
+
+            // Text Selection & Copy
+            ToolButton(
+                icon = Icons.Default.SelectAll,
+                tooltip = "Select Text / Copy",
+                isSelected = activeTool == ToolType.TEXT_SELECT,
+                onClick = { onToolSelected(ToolType.TEXT_SELECT) }
             )
 
             // Stylus Pen

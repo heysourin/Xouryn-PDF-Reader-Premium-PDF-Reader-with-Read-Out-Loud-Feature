@@ -48,7 +48,7 @@ fun AnnotationOverlayCanvas(
         modifier = modifier
             .fillMaxSize()
             .pointerInteropFilter { event ->
-                if (activeTool == ToolType.PAN) return@pointerInteropFilter false
+                if (activeTool == ToolType.PAN || activeTool == ToolType.TEXT_SELECT) return@pointerInteropFilter false
 
                 val width = event.source.let { 1f } // Handled via Canvas size
                 val isStylus = event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
