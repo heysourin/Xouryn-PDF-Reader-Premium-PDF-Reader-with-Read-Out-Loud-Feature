@@ -9,6 +9,10 @@ captures/
 .externalNativeBuild
 .cxx
 *.apk
+*.dmg
+*.iso
+*.zip
+*.tar.gz
 rea-tool/
 .build-tools/
 
